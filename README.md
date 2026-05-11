@@ -26,9 +26,7 @@ Dependencies are installed automatically by the launcher, or manually:
 pip install requests openpyxl
 ```
 
-The following standard-library / well-known packages are also used:
-- `tkinter` (included with Python)
-- `astropy` (for coordinate parsing)
+`tkinter` is included with Python and requires no separate installation.
 
 ## Installation & Usage
 
