@@ -2,6 +2,3 @@ __pycache__/
 *.pyc
 config.json
 .DS_Store
-build/
-dist/
-*.xlsx
