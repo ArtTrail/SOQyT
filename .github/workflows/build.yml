@@ -3,6 +3,11 @@ name: Build
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload assets to (e.g. v1.2.0)'
+        required: true
 
 jobs:
   build:
@@ -36,11 +41,20 @@ jobs:
         working-directory: Version 1.2.0
         run: python -m PyInstaller "Stellar Object Query Tool.spec" --noconfirm
 
+      - name: Resolve tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "RELEASE_TAG=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "$env:RELEASE_TAG"
           Compress-Archive `
             -Path "Version 1.2.0/dist/Stellar Object Query Tool" `
             -DestinationPath "Stellar_Object_Query_Tool_${tag}_win64.zip"
@@ -48,18 +62,16 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          TAG=${{ github.ref_name }}
           hdiutil create \
             -volname "Stellar Object Query Tool" \
             -srcfolder "Version 1.2.0/dist/Stellar Object Query Tool.app" \
             -ov -format UDZO \
-            "Stellar_Object_Query_Tool_${TAG}_macos.dmg"
+            "Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.dmg"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          TAG=${{ github.ref_name }}
-          tar -czf "Stellar_Object_Query_Tool_${TAG}_linux.tar.gz" \
+          tar -czf "Stellar_Object_Query_Tool_${RELEASE_TAG}_linux.tar.gz" \
             -C "Version 1.2.0/dist" "Stellar Object Query Tool"
 
       - name: Upload to release
@@ -67,12 +79,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=${{ github.ref_name }}
           if [ "$RUNNER_OS" = "Windows" ]; then
-            FILE="Stellar_Object_Query_Tool_${TAG}_win64.zip"
+            FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_win64.zip"
           elif [ "$RUNNER_OS" = "macOS" ]; then
-            FILE="Stellar_Object_Query_Tool_${TAG}_macos.dmg"
+            FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.dmg"
           else
-            FILE="Stellar_Object_Query_Tool_${TAG}_linux.tar.gz"
+            FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_linux.tar.gz"
           fi
-          gh release upload "$TAG" "$FILE"
+          gh release upload "$RELEASE_TAG" "$FILE" --clobber
