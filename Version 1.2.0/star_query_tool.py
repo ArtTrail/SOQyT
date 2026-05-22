@@ -1844,6 +1844,11 @@ BANNER_NS_FG   = "#888aaa"
 VERSION   = "1.2.0"
 COPYRIGHT = "© Art Trail 2026"
 
+import platform as _platform
+_SYS      = _platform.system()
+UI_FONT   = UI_FONT      if _SYS == 'Windows' else 'Helvetica Neue' if _SYS == 'Darwin' else 'DejaVu Sans'
+MONO_FONT = MONO_FONT      if _SYS == 'Windows' else 'Menlo'          if _SYS == 'Darwin' else 'DejaVu Sans Mono'
+
 # Auto-run server cooldown: pause for _COOLDOWN_SECS every _COOLDOWN_EVERY targets
 _COOLDOWN_EVERY = 150
 _COOLDOWN_SECS  = 45
@@ -2016,29 +2021,29 @@ class StarQueryApp(tk.Tk):
         style.configure('TFrame',       background=BG)
         style.configure('Panel.TFrame', background=PANEL)
 
-        style.configure('TLabel',  background=BG,    foreground=FG, font=('Segoe UI', 11))
-        style.configure('Panel.TLabel', background=PANEL, foreground=FG, font=('Segoe UI', 11))
+        style.configure('TLabel',  background=BG,    foreground=FG, font=(UI_FONT, 11))
+        style.configure('Panel.TLabel', background=PANEL, foreground=FG, font=(UI_FONT, 11))
         style.configure('Header.TLabel', background=PANEL, foreground=ACC,
-                        font=('Segoe UI', 11, 'bold'))
+                        font=(UI_FONT, 11, 'bold'))
 
         style.configure('TRadiobutton', background=PANEL, foreground=FG,
-                        font=('Segoe UI', 11), indicatorcolor=ENT, selectcolor=ACC)
+                        font=(UI_FONT, 11), indicatorcolor=ENT, selectcolor=ACC)
         style.map('TRadiobutton',
                   background=[('active', PANEL)],
                   foreground=[('active', FG)])
 
         style.configure('TCheckbutton', background=PANEL, foreground=FG,
-                        font=('Segoe UI', 11))
+                        font=(UI_FONT, 11))
         style.map('TCheckbutton',
                   background=[('active', PANEL)],
                   foreground=[('active', FG)])
 
         style.configure('TEntry', fieldbackground=ENT, foreground=FG,
-                        insertcolor=FG, font=('Segoe UI', 11))
+                        insertcolor=FG, font=(UI_FONT, 11))
 
         style.configure('TCombobox', fieldbackground=ENT, foreground=FG,
                         background=ENT, selectbackground=SEL, insertcolor='white',
-                        font=('Segoe UI', 11))
+                        font=(UI_FONT, 11))
         style.map('TCombobox',
                   fieldbackground=[('readonly', ENT)],
                   foreground=[('readonly', FG)])
@@ -2047,16 +2052,16 @@ class StarQueryApp(tk.Tk):
 
         style.configure('TNotebook', background=BG, borderwidth=0)
         style.configure('TNotebook.Tab', background=PANEL, foreground=FG,
-                        padding=[12, 6], font=('Segoe UI', 11))
+                        padding=[12, 6], font=(UI_FONT, 11))
         style.map('TNotebook.Tab',
                   background=[('selected', ACC)],
                   foreground=[('selected', BG)])
 
         style.configure('Treeview', background=BG, fieldbackground=BG,
-                        foreground=FG, font=('Segoe UI', 18),
+                        foreground=FG, font=(UI_FONT, 18),
                         rowheight=44, borderwidth=0)
         style.configure('Treeview.Heading', background=PANEL, foreground=ACC,
-                        font=('Segoe UI', 11, 'bold'), relief='flat')
+                        font=(UI_FONT, 11, 'bold'), relief='flat')
         style.map('Treeview',
                   background=[('selected', SEL)],
                   foreground=[('selected', FG)])
@@ -2069,13 +2074,13 @@ class StarQueryApp(tk.Tk):
                         arrowcolor=FG,  borderwidth=0)
 
         style.configure('Accent.TButton', background=ACC, foreground=BG,
-                        font=('Segoe UI', 11, 'bold'), padding=[8, 6])
+                        font=(UI_FONT, 11, 'bold'), padding=[8, 6])
         style.map('Accent.TButton',
                   background=[('active', FG)],
                   foreground=[('active', BG)])
 
         style.configure('TButton', background=PANEL, foreground=FG,
-                        font=('Segoe UI', 11), padding=[8, 6])
+                        font=(UI_FONT, 11), padding=[8, 6])
         style.map('TButton',
                   background=[('active', SEL)],
                   foreground=[('active', FG)])
@@ -2109,11 +2114,11 @@ class StarQueryApp(tk.Tk):
 
         self._status_var = tk.StringVar(value="Ready.")
         tk.Label(footer, textvariable=self._status_var,
-                 bg=PANEL, fg=FG, font=('Segoe UI', 20),
+                 bg=PANEL, fg=FG, font=(UI_FONT, 20),
                  anchor='w', padx=16).grid(row=0, column=0, sticky='ew')
 
         tk.Label(footer, text=f"{COPYRIGHT}  |  github.com/ArtTrail/SOQyT",
-                 bg=PANEL, fg=BANNER_NS_FG, font=('Segoe UI', 18),
+                 bg=PANEL, fg=BANNER_NS_FG, font=(UI_FONT, 18),
                  anchor='e', padx=16).grid(row=0, column=1, sticky='e')
 
     def _collapsible_section(self, parent, title, default_open=True):
@@ -2128,11 +2133,11 @@ class StarQueryApp(tk.Tk):
         header.pack(fill='x', padx=10, pady=(6, 0))
 
         arrow = tk.Label(header, text='▼' if default_open else '▶',
-                         bg=PANEL, fg=ACC, font=('Segoe UI', 10, 'bold'), cursor='hand2')
+                         bg=PANEL, fg=ACC, font=(UI_FONT, 10, 'bold'), cursor='hand2')
         arrow.pack(side='left')
 
         tk.Label(header, text=f'  {title}', bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 11, 'bold'), cursor='hand2').pack(side='left')
+                 font=(UI_FONT, 11, 'bold'), cursor='hand2').pack(side='left')
 
         body = tk.Frame(container, bg=PANEL)
         if default_open:
@@ -2176,7 +2181,7 @@ class StarQueryApp(tk.Tk):
         self._gaia_popup = pop
 
         tk.Label(pop, text="Gaia DR3 Parameters", bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 11, 'bold')).pack(padx=16, pady=(12, 6))
+                 font=(UI_FONT, 11, 'bold')).pack(padx=16, pady=(12, 6))
 
         ttk.Separator(pop, orient='horizontal').pack(fill='x', padx=16, pady=4)
 
@@ -2184,7 +2189,7 @@ class StarQueryApp(tk.Tk):
             tk.Checkbutton(pop, text=label, variable=self._gaia_param_vars[key],
                            bg=PANEL, fg=FG, selectcolor=ENT,
                            activebackground=PANEL, activeforeground=FG,
-                           anchor='w', font=('Segoe UI', 11)).pack(fill='x', padx=16, pady=2)
+                           anchor='w', font=(UI_FONT, 11)).pack(fill='x', padx=16, pady=2)
 
         ttk.Separator(pop, orient='horizontal').pack(fill='x', padx=16, pady=(8, 4))
         ttk.Button(pop, text="Close", command=pop.destroy).pack(padx=16, pady=(0, 12))
@@ -2205,14 +2210,14 @@ class StarQueryApp(tk.Tk):
         self._simbad_meas_popup = pop
 
         tk.Label(pop, text="SIMBAD Detail Sections", bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 11, 'bold')).pack(padx=16, pady=(12, 6))
+                 font=(UI_FONT, 11, 'bold')).pack(padx=16, pady=(12, 6))
         ttk.Separator(pop, orient='horizontal').pack(fill='x', padx=16, pady=4)
 
         for key, label in SIMBAD_MEAS_OPTS:
             tk.Checkbutton(pop, text=label, variable=self._simbad_meas_vars[key],
                            bg=PANEL, fg=FG, selectcolor=ENT,
                            activebackground=PANEL, activeforeground=FG,
-                           anchor='w', font=('Segoe UI', 11),
+                           anchor='w', font=(UI_FONT, 11),
                            command=self._rerender_simbad_detail).pack(fill='x', padx=16, pady=2)
 
         ttk.Separator(pop, orient='horizontal').pack(fill='x', padx=16, pady=(8, 4))
@@ -2240,7 +2245,7 @@ class StarQueryApp(tk.Tk):
 
         # Header
         tk.Label(parent, text="SEARCH PARAMETERS", bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 11, 'bold')).pack(fill='x', padx=10, pady=(10, 4))
+                 font=(UI_FONT, 11, 'bold')).pack(fill='x', padx=10, pady=(10, 4))
 
         ttk.Separator(parent, orient='horizontal').pack(fill='x', padx=10, pady=2)
 
@@ -2250,16 +2255,16 @@ class StarQueryApp(tk.Tk):
         mode_frame.pack(fill='x', **pad)
         tk.Radiobutton(mode_frame, text="By Name", variable=self._mode_var, value='name',
                        bg=PANEL, fg=FG, selectcolor=ENT, activebackground=PANEL,
-                       activeforeground=FG, font=('Segoe UI', 11),
+                       activeforeground=FG, font=(UI_FONT, 11),
                        command=self._toggle_mode).pack(side='left', padx=(0, 12))
         tk.Radiobutton(mode_frame, text="By Coordinates", variable=self._mode_var, value='coords',
                        bg=PANEL, fg=FG, selectcolor=ENT, activebackground=PANEL,
-                       activeforeground=FG, font=('Segoe UI', 11),
+                       activeforeground=FG, font=(UI_FONT, 11),
                        command=self._toggle_mode).pack(side='left')
 
         # Name entry (with recent-search history dropdown)
         tk.Label(parent, text="Star Name:", bg=PANEL, fg=FG,
-                 font=('Segoe UI', 10)).pack(fill='x', padx=10, pady=(6, 0))
+                 font=(UI_FONT, 10)).pack(fill='x', padx=10, pady=(6, 0))
         self._name_var = tk.StringVar()
         self._name_entry = ttk.Combobox(parent, textvariable=self._name_var,
                                         values=self._cfg.get('name_history', []))
@@ -2267,32 +2272,32 @@ class StarQueryApp(tk.Tk):
         self._name_hint = tk.Label(
             parent,
             text='e.g.  RR Lyr   WASP-24   GJ 3470   HD 216963   Gaia DR3 1234567890',
-            bg=PANEL, fg=BANNER_NS_FG, font=('Segoe UI', 9, 'italic'),
+            bg=PANEL, fg=BANNER_NS_FG, font=(UI_FONT, 9, 'italic'),
             anchor='w', justify='left', wraplength=260)
         self._name_hint.pack(fill='x', padx=10, pady=(0, 1))
 
         self._resolved_var = tk.StringVar()
         self._resolved_label = tk.Label(
             parent, textvariable=self._resolved_var,
-            bg=PANEL, fg=ACC, font=('Segoe UI', 9),
+            bg=PANEL, fg=ACC, font=(UI_FONT, 9),
             anchor='w', padx=0)
         self._resolved_label.pack(fill='x', padx=10, pady=(0, 2))
 
         # RA / Dec / Radius entries
         tk.Label(parent, text="RA (deg or hms):", bg=PANEL, fg=FG,
-                 font=('Segoe UI', 10)).pack(fill='x', padx=10, pady=(6, 0))
+                 font=(UI_FONT, 10)).pack(fill='x', padx=10, pady=(6, 0))
         self._ra_var = tk.StringVar()
         self._ra_entry = ttk.Entry(parent, textvariable=self._ra_var)
         self._ra_entry.pack(fill='x', **pad)
 
         tk.Label(parent, text="Dec (deg or dms):", bg=PANEL, fg=FG,
-                 font=('Segoe UI', 10)).pack(fill='x', padx=10, pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(fill='x', padx=10, pady=(4, 0))
         self._dec_var = tk.StringVar()
         self._dec_entry = ttk.Entry(parent, textvariable=self._dec_var)
         self._dec_entry.pack(fill='x', **pad)
 
         tk.Label(parent, text="Search Radius (arcmin):", bg=PANEL, fg=FG,
-                 font=('Segoe UI', 10)).pack(fill='x', padx=10, pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(fill='x', padx=10, pady=(4, 0))
         self._radius_var = tk.StringVar(value=self._cfg.get('last_radius', '0.1'))
         self._radius_entry = ttk.Entry(parent, textvariable=self._radius_var)
         self._radius_entry.pack(fill='x', **pad)
@@ -2316,10 +2321,10 @@ class StarQueryApp(tk.Tk):
             tk.Checkbutton(row_f, text=label, variable=var,
                            bg=PANEL, fg=FG, selectcolor=ENT,
                            activebackground=PANEL, activeforeground=FG,
-                           anchor='w', font=('Segoe UI', 11)).pack(side='left', fill='x', expand=True)
+                           anchor='w', font=(UI_FONT, 11)).pack(side='left', fill='x', expand=True)
             if key == 'simbad':
                 tk.Button(row_f, text='⚙', bg=PANEL, fg=ACC,
-                          relief='flat', bd=0, font=('Segoe UI', 12),
+                          relief='flat', bd=0, font=(UI_FONT, 12),
                           activebackground=PANEL, activeforeground=FG,
                           cursor='hand2',
                           command=self._show_simbad_meas_popup).pack(side='right', padx=(0, 6))
@@ -2327,44 +2332,44 @@ class StarQueryApp(tk.Tk):
                 flt_f = tk.Frame(body_src, bg=PANEL)
                 flt_f.pack(fill='x', padx=(24, 4), pady=(0, 6))
                 tk.Label(flt_f, text="Object Type:", bg=PANEL, fg=FG,
-                         font=('Segoe UI', 10)).pack(fill='x', pady=(2, 0))
+                         font=(UI_FONT, 10)).pack(fill='x', pady=(2, 0))
                 otype_vals = ['All', 'RR*', 'Ce*', 'dS*', 'RV*', 'LP*', 'SR*', 'Mi*', 'Ell*', 'Ro*', 'EB*', 'WV*']
                 self._otype_var = tk.StringVar(value='All')
                 self._otype_combo = ttk.Combobox(flt_f, textvariable=self._otype_var,
                                                   values=otype_vals, state='readonly')
                 self._otype_combo.pack(fill='x', pady=2)
                 tk.Label(flt_f, text="Period range (days):", bg=PANEL, fg=FG,
-                         font=('Segoe UI', 10)).pack(fill='x', pady=(4, 0))
+                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
                 pf = tk.Frame(flt_f, bg=PANEL)
                 pf.pack(fill='x', pady=2)
                 self._period_min_var = tk.StringVar()
                 self._period_max_var = tk.StringVar()
                 ttk.Entry(pf, textvariable=self._period_min_var, width=7).pack(side='left')
-                tk.Label(pf, text=' – ', bg=PANEL, fg=FG, font=('Segoe UI', 10)).pack(side='left')
+                tk.Label(pf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
                 ttk.Entry(pf, textvariable=self._period_max_var, width=7).pack(side='left')
                 tk.Label(flt_f, text="Max Mag range:", bg=PANEL, fg=FG,
-                         font=('Segoe UI', 10)).pack(fill='x', pady=(4, 0))
+                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
                 mf = tk.Frame(flt_f, bg=PANEL)
                 mf.pack(fill='x', pady=2)
                 self._mag_min_var = tk.StringVar()
                 self._mag_max_var = tk.StringVar()
                 ttk.Entry(mf, textvariable=self._mag_min_var, width=7).pack(side='left')
-                tk.Label(mf, text=' – ', bg=PANEL, fg=FG, font=('Segoe UI', 10)).pack(side='left')
+                tk.Label(mf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
                 ttk.Entry(mf, textvariable=self._mag_max_var, width=7).pack(side='left')
                 tk.Label(flt_f, text="Ref year range:", bg=PANEL, fg=FG,
-                         font=('Segoe UI', 10)).pack(fill='x', pady=(4, 0))
+                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
                 yf = tk.Frame(flt_f, bg=PANEL)
                 yf.pack(fill='x', pady=2)
                 self._ref_year_from_var = tk.StringVar()
                 self._ref_year_to_var   = tk.StringVar(value=str(datetime.date.today().year))
                 ttk.Entry(yf, textvariable=self._ref_year_from_var, width=7).pack(side='left')
-                tk.Label(yf, text=' – ', bg=PANEL, fg=FG, font=('Segoe UI', 10)).pack(side='left')
+                tk.Label(yf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
                 ttk.Entry(yf, textvariable=self._ref_year_to_var, width=7).pack(side='left')
                 self._ref_year_from_var.trace_add('write', self._on_ref_year_filter_change)
                 self._ref_year_to_var.trace_add('write', self._on_ref_year_filter_change)
             if key == 'gaia':
                 tk.Button(row_f, text='⚙', bg=PANEL, fg=ACC,
-                          relief='flat', bd=0, font=('Segoe UI', 12),
+                          relief='flat', bd=0, font=(UI_FONT, 12),
                           activebackground=PANEL, activeforeground=FG,
                           cursor='hand2',
                           command=self._show_gaia_params_popup).pack(side='right', padx=(0, 6))
@@ -2387,22 +2392,22 @@ class StarQueryApp(tk.Tk):
         self._batch_nav_frame = tk.Frame(parent, bg=PANEL, relief='flat', bd=0)
 
         tk.Label(self._batch_nav_frame, text="─── BATCH QUERY ───────────────────",
-                 bg=PANEL, fg=ACC, font=('Segoe UI', 9, 'bold')).pack(fill='x', padx=10, pady=(6, 2))
+                 bg=PANEL, fg=ACC, font=(UI_FONT, 9, 'bold')).pack(fill='x', padx=10, pady=(6, 2))
 
         nav_row = tk.Frame(self._batch_nav_frame, bg=PANEL)
         nav_row.pack(fill='x', padx=10, pady=2)
         self._batch_prev_btn = tk.Button(
             nav_row, text="◀", bg=PANEL, fg=FG, relief='flat', bd=0,
-            font=('Segoe UI', 13), activebackground=PANEL, cursor='hand2',
+            font=(UI_FONT, 13), activebackground=PANEL, cursor='hand2',
             command=lambda: self._batch_go(-1))
         self._batch_prev_btn.pack(side='left')
         self._batch_nav_label = tk.Label(
             nav_row, text="", bg=PANEL, fg=FG,
-            font=('Segoe UI', 10), anchor='center', wraplength=180)
+            font=(UI_FONT, 10), anchor='center', wraplength=180)
         self._batch_nav_label.pack(side='left', fill='x', expand=True)
         self._batch_next_btn = tk.Button(
             nav_row, text="▶", bg=PANEL, fg=FG, relief='flat', bd=0,
-            font=('Segoe UI', 13), activebackground=PANEL, cursor='hand2',
+            font=(UI_FONT, 13), activebackground=PANEL, cursor='hand2',
             command=lambda: self._batch_go(1))
         self._batch_next_btn.pack(side='right')
 
@@ -2414,7 +2419,7 @@ class StarQueryApp(tk.Tk):
         self._batch_cancel_auto_btn = tk.Button(
             self._batch_nav_frame, text="⏹  Cancel Auto-Run",
             bg=PANEL, fg='#e08080', relief='flat', bd=0,
-            font=('Segoe UI', 10), cursor='hand2',
+            font=(UI_FONT, 10), cursor='hand2',
             activebackground=PANEL,
             command=self._cancel_auto_run)
         # not packed initially — shown only during auto-run
@@ -2422,7 +2427,7 @@ class StarQueryApp(tk.Tk):
         self._batch_close_btn = tk.Button(
             self._batch_nav_frame, text="✕  Close Batch",
             bg=PANEL, fg='#888', relief='flat', bd=0,
-            font=('Segoe UI', 10), cursor='hand2',
+            font=(UI_FONT, 10), cursor='hand2',
             activebackground=PANEL,
             command=self._close_batch)
         self._batch_close_btn.pack(padx=10, pady=(0, 8))
@@ -2474,7 +2479,7 @@ class StarQueryApp(tk.Tk):
         detail_outer.rowconfigure(1, weight=1)
 
         tk.Label(detail_outer, text="Selected Star Detail", bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w', padx=8, pady=(4, 0))
+                 font=(UI_FONT, 10, 'bold')).grid(row=0, column=0, sticky='w', padx=8, pady=(4, 0))
 
         detail_inner = tk.Frame(detail_outer, bg=ENT)
         detail_inner.grid(row=1, column=0, sticky='nsew', padx=8, pady=(2, 6))
@@ -2482,7 +2487,7 @@ class StarQueryApp(tk.Tk):
         detail_inner.rowconfigure(0, weight=1)
 
         self._detail_text = tk.Text(detail_inner, bg=ENT, fg=FG,
-                                     font=('Consolas', 17), relief='flat',
+                                     font=(MONO_FONT, 17), relief='flat',
                                      state='disabled', wrap='word', padx=8, pady=4,
                                      insertbackground=FG)
         detail_vsb = ttk.Scrollbar(detail_inner, orient='vertical',
@@ -2515,7 +2520,7 @@ class StarQueryApp(tk.Tk):
         cur_row = 0
         if note_text:
             tk.Label(tab_frame, text=note_text, bg=BG, fg=ACC,
-                     font=('Segoe UI', 11), wraplength=900, justify='left', anchor='w'
+                     font=(UI_FONT, 11), wraplength=900, justify='left', anchor='w'
                      ).grid(row=cur_row, column=0, sticky='ew', padx=10, pady=(4, 2))
             cur_row += 1
 
@@ -2530,7 +2535,7 @@ class StarQueryApp(tk.Tk):
         cur_row += 1
 
         lbl = tk.Label(banner_outer, text="Ready", bg=PANEL, fg=BANNER_NS_FG,
-                       font=('Segoe UI', 13, 'bold'), anchor='w', padx=12)
+                       font=(UI_FONT, 13, 'bold'), anchor='w', padx=12)
         lbl.grid(row=0, column=0, sticky='ew', pady=4)
         self._banner_label[key] = lbl
 
@@ -4148,56 +4153,56 @@ WHERE b.main_id = '{safe_id}'
         win.grab_set()
 
         tk.Label(win, text="Configure Batch Import", bg=PANEL, fg=ACC,
-                 font=('Segoe UI', 11, 'bold'), pady=8).pack(fill='x')
+                 font=(UI_FONT, 11, 'bold'), pady=8).pack(fill='x')
         tk.Label(win, text=f"File: {filename}", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(padx=14, pady=(8, 0), anchor='w')
+                 font=(UI_FONT, 10)).pack(padx=14, pady=(8, 0), anchor='w')
         tk.Label(win, text=f"{len(rows)} row(s) found", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(padx=14, pady=(0, 4), anchor='w')
+                 font=(UI_FONT, 10)).pack(padx=14, pady=(0, 4), anchor='w')
 
         ttk.Separator(win, orient='horizontal').pack(fill='x', padx=14, pady=6)
 
         tk.Label(win, text="Search mode:", bg=BG, fg=FG,
-                 font=('Segoe UI', 10, 'bold')).pack(padx=14, anchor='w')
+                 font=(UI_FONT, 10, 'bold')).pack(padx=14, anchor='w')
         mode_var = tk.StringVar(value='name')
         rb_f = tk.Frame(win, bg=BG)
         rb_f.pack(padx=14, fill='x', pady=4)
         tk.Radiobutton(rb_f, text="By Star Name", variable=mode_var, value='name',
                        bg=BG, fg=FG, selectcolor=ENT, activebackground=BG,
-                       font=('Segoe UI', 11)).pack(side='left', padx=(0, 20))
+                       font=(UI_FONT, 11)).pack(side='left', padx=(0, 20))
         tk.Radiobutton(rb_f, text="By Coordinates", variable=mode_var, value='coords',
                        bg=BG, fg=FG, selectcolor=ENT, activebackground=BG,
-                       font=('Segoe UI', 11)).pack(side='left')
+                       font=(UI_FONT, 11)).pack(side='left')
 
         # Name mode widgets
         name_frame = tk.Frame(win, bg=BG)
         tk.Label(name_frame, text="Star Name column:", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w')
+                 font=(UI_FONT, 10)).pack(anchor='w')
         name_col_var = tk.StringVar(value=headers[0] if headers else '')
         ttk.Combobox(name_frame, textvariable=name_col_var, values=headers,
                      state='readonly', width=30).pack(anchor='w', pady=2)
         tk.Label(name_frame, text="Search radius (arcmin):", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w', pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         name_radius_var = tk.StringVar(value=self._radius_var.get())
         ttk.Entry(name_frame, textvariable=name_radius_var, width=10).pack(anchor='w', pady=2)
 
         # Coords mode widgets
         coords_frame = tk.Frame(win, bg=BG)
         tk.Label(coords_frame, text="RA column:", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w')
+                 font=(UI_FONT, 10)).pack(anchor='w')
         ra_col_var = tk.StringVar(value=headers[0] if headers else '')
         ttk.Combobox(coords_frame, textvariable=ra_col_var, values=headers,
                      state='readonly', width=30).pack(anchor='w', pady=2)
         tk.Label(coords_frame, text="Dec column:", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w', pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         dec_col_var = tk.StringVar(value=headers[1] if len(headers) > 1 else (headers[0] if headers else ''))
         ttk.Combobox(coords_frame, textvariable=dec_col_var, values=headers,
                      state='readonly', width=30).pack(anchor='w', pady=2)
         tk.Label(coords_frame, text="Search radius (arcmin):", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w', pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         radius_var = tk.StringVar(value=self._radius_var.get())
         ttk.Entry(coords_frame, textvariable=radius_var, width=10).pack(anchor='w', pady=2)
         tk.Label(coords_frame, text="Target name column (optional):", bg=BG, fg=FG,
-                 font=('Segoe UI', 10)).pack(anchor='w', pady=(4, 0))
+                 font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         label_col_var = tk.StringVar(value='')
         ttk.Combobox(coords_frame, textvariable=label_col_var,
                      values=['(none)'] + headers,
@@ -4220,10 +4225,10 @@ WHERE b.main_id = '{safe_id}'
         tk.Checkbutton(auto_chk_f, text="Auto-Run all targets",
                        variable=auto_var, bg=BG, fg=FG, selectcolor=ENT,
                        activebackground=BG,
-                       font=('Segoe UI', 11)).pack(side='left')
+                       font=(UI_FONT, 11)).pack(side='left')
         tk.Label(auto_chk_f,
                  text="  (queries every row, then prompts to export)",
-                 bg=BG, fg='#888', font=('Segoe UI', 9)).pack(side='left')
+                 bg=BG, fg='#888', font=(UI_FONT, 9)).pack(side='left')
 
         ttk.Separator(win, orient='horizontal').pack(fill='x', padx=14, pady=8)
 
@@ -4576,8 +4581,8 @@ WHERE b.main_id = '{safe_id}'
             hdr_hex, alt_hex = _PALETTE.get(palette_key, ('4472C4', 'DCE6F1'))
             hdr_fill = PatternFill('solid', fgColor=hdr_hex)
             alt_fill = PatternFill('solid', fgColor=alt_hex)
-            hdr_font = Font(bold=True, color='FFFFFF', name='Segoe UI', size=10)
-            dat_font = Font(name='Segoe UI', size=10)
+            hdr_font = Font(bold=True, color='FFFFFF', name=UI_FONT, size=10)
+            dat_font = Font(name=UI_FONT, size=10)
             ctr      = Alignment(horizontal='center', vertical='center')
             thin_sd  = Side(style='thin', color='D0D0D0')
             hdr_brd  = Border(bottom=thin_sd)
@@ -4615,12 +4620,12 @@ WHERE b.main_id = '{safe_id}'
                                end_row=note_row, end_column=ncols)
             nc = ws.cell(note_row, 1)
             nc.fill      = PatternFill('solid', fgColor='FFF2CC')
-            nc.font      = Font(name='Segoe UI', size=9, italic=True, color='7F6000')
+            nc.font      = Font(name=UI_FONT, size=9, italic=True, color='7F6000')
             nc.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
             ws.row_dimensions[note_row].height = 28
 
         def _apply_url_col(ws, col_idx):
-            url_font = Font(name='Segoe UI', size=10, color='0563C1', underline='single')
+            url_font = Font(name=UI_FONT, size=10, color='0563C1', underline='single')
             for ws_row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
                 cell = ws_row[0]
                 if cell.value:
@@ -4629,7 +4634,7 @@ WHERE b.main_id = '{safe_id}'
 
         def _apply_bibcode_cols(ws):
             """Hyperlink every 'Bibcode' column to NASA ADS (abs/{bibcode})."""
-            bib_font = Font(name='Segoe UI', size=10, color='0563C1', underline='single')
+            bib_font = Font(name=UI_FONT, size=10, color='0563C1', underline='single')
             bib_col_indices = [c.column for c in ws[1] if c.value == 'Bibcode']
             for col_idx in bib_col_indices:
                 for ws_row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
@@ -4705,7 +4710,7 @@ WHERE b.main_id = '{safe_id}'
                     ws_x.merge_cells(start_row=nd_row, start_column=1,
                                      end_row=nd_row, end_column=ncols)
                 nd_cell = ws_x.cell(nd_row, 1)
-                nd_cell.font      = Font(name='Segoe UI', size=10, italic=True, color='888888')
+                nd_cell.font      = Font(name=UI_FONT, size=10, italic=True, color='888888')
                 nd_cell.alignment = Alignment(horizontal='center', vertical='center')
                 ws_x.row_dimensions[nd_row].height = 20
             _style_ws(ws_x, 'simbad_meas')

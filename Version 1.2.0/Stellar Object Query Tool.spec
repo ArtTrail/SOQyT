@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+import sys
 
 a = Analysis(
     ['star_query_tool.py'],
@@ -42,3 +42,11 @@ coll = COLLECT(
     upx_exclude=[],
     name='Stellar Object Query Tool',
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='Stellar Object Query Tool.app',
+        icon=None,
+        bundle_identifier='com.arttrail.soqyt',
+    )
