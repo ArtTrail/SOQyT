@@ -15,6 +15,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -65,11 +66,9 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          hdiutil create \
-            -volname "Stellar Object Query Tool" \
-            -srcfolder "Version 1.3.0/dist/Stellar Object Query Tool.app" \
-            -ov -format UDZO \
-            "Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.dmg"
+          cd "Version 1.3.0/dist"
+          zip -r "../../Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.zip" \
+            "Stellar Object Query Tool.app"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -85,7 +84,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_win64.zip"
           elif [ "$RUNNER_OS" = "macOS" ]; then
-            FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.dmg"
+            FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.zip"
           else
             FILE="Stellar_Object_Query_Tool_${RELEASE_TAG}_linux.tar.gz"
           fi
