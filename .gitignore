@@ -5,3 +5,6 @@ config.json
 build/
 dist/
 *.xlsx
+*.log
+*.bak
+*.png
