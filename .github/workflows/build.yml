@@ -42,7 +42,7 @@ jobs:
         run: pip install requests openpyxl xlrd pyinstaller
 
       - name: Build
-        working-directory: Version 1.3.0
+        working-directory: Version 1.3.1
         run: python -m PyInstaller "Stellar Object Query Tool.spec" --noconfirm
 
       - name: Resolve tag
@@ -60,13 +60,13 @@ jobs:
         run: |
           $tag = "$env:RELEASE_TAG"
           Compress-Archive `
-            -Path "Version 1.3.0/dist/Stellar Object Query Tool" `
+            -Path "Version 1.3.1/dist/Stellar Object Query Tool" `
             -DestinationPath "Stellar_Object_Query_Tool_${tag}_win64.zip"
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd "Version 1.3.0/dist"
+          cd "Version 1.3.1/dist"
           zip -r "../../Stellar_Object_Query_Tool_${RELEASE_TAG}_macos.zip" \
             "Stellar Object Query Tool.app"
 
@@ -74,7 +74,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           tar -czf "Stellar_Object_Query_Tool_${RELEASE_TAG}_linux.tar.gz" \
-            -C "Version 1.3.0/dist" "Stellar Object Query Tool"
+            -C "Version 1.3.1/dist" "Stellar Object Query Tool"
 
       - name: Upload to release
         shell: bash
