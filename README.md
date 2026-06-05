@@ -1,8 +1,6 @@
-# SOQyT — Stellar Object Query Tool  v1.2.0
+# SOQyT — Stellar Object Query Tool  v1.3.2
 
 A Python/Tkinter desktop application for querying multiple astronomy databases simultaneously by star name or sky coordinates. Results are displayed in tabbed panels with full per-star detail and can be exported to Excel or CSV.
-
-![SOQyT main window](Version%201.2.0/screenshots/soqyt_main.png)
 
 ## Data Sources
 
@@ -25,7 +23,17 @@ A Python/Tkinter desktop application for querying multiple astronomy databases s
 - **Tabbed results** — each data source has its own tab; tab labels show match counts
 - **Selected Star Detail** — click any result row for a full detail panel: coordinates, object type, spectral classifications, measurements with uncertainties, and clickable ADS bibcode links for every measurement
 - **Configurable columns** — gear buttons on SIMBAD and Gaia DR3 tabs let you toggle which measurement sections and parameters are shown
-- **Filters** — narrow SIMBAD results by object type, period range, and magnitude range
+- **Individual VizieR sub-catalog toggles** — each VizieR catalog (2MASS, AllWISE, APASS, Tycho-2, WDS) has its own enable/disable checkbox
+
+### Filters
+
+Collapsible filter panels let you narrow results without needing to know a specific star's name. Set filters and leave RA/Dec blank to run a catalog-wide scan — supported catalogs will run and all others will show "Not searched."
+
+| Filter Panel | Fields |
+|---|---|
+| **SIMBAD Filters** | Object type, period range (days), max magnitude range, reference year range |
+| **VSX Filters** | Variable type (74 standard types + free-text), period range, max magnitude range, amplitude ≥ |
+| **WDS Filters** | RA range (decimal hours), Dec range (degrees), separation, primary/secondary magnitude, position angle, number of observations, last-observation year |
 
 ## Batch Mode
 
@@ -33,20 +41,22 @@ Import a CSV or Excel file (.csv, .xlsx, or .xls) and query every target automat
 
 - **Name mode** — one star name per row; resolves through SIMBAD
 - **Coordinate mode** — RA/Dec columns with a single search radius; optionally map a name column so exports show star names instead of coordinates
-- **Auto-Run** — steps through all targets unattended; automatic 45-second server cooldown every 150 targets to prevent timeouts on large lists
+- **Auto-Run** — steps through all targets unattended; automatic 45-second server cooldown every 150 targets to prevent timeouts on large lists; live elapsed time counter shown during run
 - **Navigation** — step forward/back manually or jump directly to any target
 
 ## Export
 
 Results from all data sources export together into a single multi-sheet Excel workbook, or as a flat CSV.
 
-![Exported spreadsheet](Version%201.2.0/screenshots/soqyt_export.png)
-
 - One sheet per catalog (SIMBAD, AAVSO VSX, 2MASS, AllWISE, APASS, Tycho-2, WDS, Orb6, Gaia DR3, NEA)
 - Six dedicated SIMBAD measurement sheets (SpT, Plx, Dist, PM, RV, Rot) — always present, with a "no data" notice when empty
 - Sheets with positional matches (2MASS, AllWISE, APASS, Tycho-2) export the nearest match per target
 - Bibcode columns hyperlinked to ADS
-- Freeze panes at B2; center-aligned cells; alternating row shading per catalog color
+- Center-aligned cells; alternating row shading per catalog color
+
+## Updates
+
+SOQyT checks for new releases automatically at startup. If a newer version is available, an update banner appears with a one-click download. Use **Help → Check for Updates** to check manually at any time.
 
 ## Requirements
 
@@ -67,16 +77,22 @@ pip install requests openpyxl xlrd
 
 ```
 # Launcher (installs dependencies automatically, then runs)
-Version 1.2.0\run.bat
+Version 1.3.2\run.bat
 
 # Or directly
-python "Version 1.2.0\star_query_tool.py"
+python "Version 1.3.2\star_query_tool.py"
 ```
 
-## Windows Executable
+## Pre-built Executables
 
-A pre-built Windows onedir executable is available on the [Releases](https://github.com/ArtTrail/SOQyT/releases) page — no Python installation required. Extract the zip and run `Stellar Object Query Tool.exe`.
+Pre-built executables for Windows, macOS, and Linux are available on the [Releases](https://github.com/ArtTrail/SOQyT/releases) page — no Python installation required.
+
+| Platform | Package | How to run |
+|---|---|---|
+| Windows | `*_win64.zip` | Extract and run `Stellar Object Query Tool.exe` |
+| macOS | `*_macos.zip` | Extract and open `Stellar Object Query Tool.app` |
+| Linux | `*_linux.tar.gz` | Extract and run `Stellar Object Query Tool` |
 
 ## License
 
-MIT License — © Art Trail 2026. See [Version 1.2.0/LICENSE](Version%201.2.0/LICENSE) for details.
+MIT License — © Art Trail 2026. See [Version 1.3.0/LICENSE](Version%201.3.0/LICENSE) for details.
