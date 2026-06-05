@@ -11,6 +11,9 @@ import statistics
 import requests
 import json
 import os
+import sys as _sys
+import time as _time
+import logging as _logging
 import urllib.parse
 import re
 import tkinter.font as tkfont
@@ -45,6 +48,68 @@ try:
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
+
+
+# ──────────────────────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────────────────────
+
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'soqyt_log.log')
+_LOG_BAK_PATH = _LOG_PATH + '.bak'
+
+# Rotate: previous session → .bak, start fresh log each run
+try:
+    if os.path.exists(_LOG_BAK_PATH):
+        os.remove(_LOG_BAK_PATH)
+    if os.path.exists(_LOG_PATH):
+        os.rename(_LOG_PATH, _LOG_BAK_PATH)
+except OSError:
+    pass
+
+_log = _logging.getLogger('SOQyT')
+_log.setLevel(_logging.DEBUG)
+_log_fh = _logging.FileHandler(_LOG_PATH, mode='w', encoding='utf-8')
+_log_fh.setFormatter(_logging.Formatter(
+    '%(asctime)s.%(msecs)03d [%(levelname)-7s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'))
+_log.addHandler(_log_fh)
+
+
+def _http_post(url, **kwargs):
+    """Logged wrapper for requests.post. Logs ADQL, status, size, and elapsed time."""
+    data = kwargs.get('data', {})
+    q_preview = ''
+    if isinstance(data, dict) and 'QUERY' in data:
+        q = data['QUERY'].strip()
+        q_preview = f'\n    ADQL: {q[:200]}{"…" if len(q) > 200 else ""}'
+    _log.debug(f'POST {url}{q_preview}')
+    t0 = _time.monotonic()
+    try:
+        r = requests.post(url, **kwargs)
+        elapsed = _time.monotonic() - t0
+        body_note = '  ⚠ empty body' if not r.text.strip() else ''
+        _log.debug(f'  → HTTP {r.status_code} | {len(r.content):,} bytes | {elapsed:.3f}s{body_note}')
+        return r
+    except Exception as exc:
+        elapsed = _time.monotonic() - t0
+        _log.error(f'  → FAILED after {elapsed:.3f}s — {type(exc).__name__}: {exc}', exc_info=True)
+        raise
+
+
+def _http_get(url, **kwargs):
+    """Logged wrapper for requests.get. Logs URL, status, size, and elapsed time."""
+    _log.debug(f'GET {url}')
+    t0 = _time.monotonic()
+    try:
+        r = requests.get(url, **kwargs)
+        elapsed = _time.monotonic() - t0
+        body_note = '  ⚠ empty body' if not r.text.strip() else ''
+        _log.debug(f'  → HTTP {r.status_code} | {len(r.content):,} bytes | {elapsed:.3f}s{body_note}')
+        return r
+    except Exception as exc:
+        elapsed = _time.monotonic() - t0
+        _log.error(f'  → FAILED after {elapsed:.3f}s — {type(exc).__name__}: {exc}', exc_info=True)
+        raise
 
 
 # ──────────────────────────────────────────────────────────────
@@ -426,7 +491,7 @@ WHERE CONTAINS(POINT('ICRS', b.ra, b.dec),
         'FORMAT': 'json',
         'QUERY': adql,
     }
-    r = requests.post(SIMBAD_TAP, data=params, timeout=60)
+    r = _http_post(SIMBAD_TAP, data=params, timeout=60)
     r.raise_for_status()
     data = r.json().get('data', [])
 
@@ -445,7 +510,7 @@ def query_simbad_by_name(name, period_min, period_max, mag_min, mag_max,
             'FORMAT': 'json',
             'QUERY': adql,
         }
-        r = requests.post(SIMBAD_TAP, data=params, timeout=60)
+        r = _http_post(SIMBAD_TAP, data=params, timeout=60)
         r.raise_for_status()
         return r.json().get('data', [])
 
@@ -670,7 +735,7 @@ def query_vsx_by_name(name, period_min, period_max, mag_min, mag_max, status_cal
         'format': 'json',
         'ident': name,
     }
-    r = requests.get(url, params=params, timeout=30)
+    r = _http_get(url, params=params, timeout=30)
     r.raise_for_status()
     j = r.json()
     obj = j.get('VSXObject')
@@ -702,7 +767,7 @@ def query_vsx(ra_deg, dec_deg, radius_arcmin, period_min, period_max,
         'radius': radius_deg,
         'coords': 'decimal',
     }
-    r = requests.get(VSX_BASE, params=params, timeout=30)
+    r = _http_get(VSX_BASE, params=params, timeout=30)
     r.raise_for_status()
     j = r.json()
 
@@ -838,7 +903,7 @@ def _parse_gaia_csv(text):
 def _vizier_post(adql):
     """POST an ADQL query to VizieR TAP, parse VOTable, return data rows."""
     params = {'REQUEST': 'doQuery', 'LANG': 'ADQL', 'FORMAT': 'votable', 'QUERY': adql}
-    r = requests.post(VIZIER_TAP, data=params, timeout=60)
+    r = _http_post(VIZIER_TAP, data=params, timeout=60)
     # Don't raise_for_status first — VizieR returns 400 with a VOTable body
     # that contains the actual error message; let _parse_votable extract it.
     try:
@@ -1303,7 +1368,7 @@ def _load_orb6():
     global _ORB6_CACHE
     if _ORB6_CACHE is not None:
         return _ORB6_CACHE
-    r = requests.get(_ORB6_URL, timeout=30)
+    r = _http_get(_ORB6_URL, timeout=30)
     r.raise_for_status()
     cache = {}
     for line in r.text.splitlines()[2:]:
@@ -1446,7 +1511,7 @@ def _resolve_name_simbad(name):
 
     def _run(adql):
         params = {'REQUEST': 'doQuery', 'LANG': 'ADQL', 'FORMAT': 'json', 'QUERY': adql}
-        r = requests.post(SIMBAD_TAP, data=params, timeout=30)
+        r = _http_post(SIMBAD_TAP, data=params, timeout=30)
         r.raise_for_status()
         data = r.json().get('data', [])
         if data and data[0][0] is not None:
@@ -1484,7 +1549,7 @@ def _resolve_name_simbad(name):
                 'MAXREC': '1',
                 'QUERY': f"SELECT ra, dec FROM gaiadr3.gaia_source WHERE source_id = {source_id_int}",
             }
-            r = requests.post(GAIA_TAP, data=params, timeout=30)
+            r = _http_post(GAIA_TAP, data=params, timeout=30)
             r.raise_for_status()
             rows = _parse_gaia_csv(r.text)
             if rows and rows[0].get('ra') is not None:
@@ -1517,7 +1582,7 @@ WHERE ra  BETWEEN {ra_deg  - radius_deg} AND {ra_deg  + radius_deg}
         'MAXREC': '2000',
         'QUERY': adql,
     }
-    r = requests.post(GAIA_TAP, data=params, timeout=120)
+    r = _http_post(GAIA_TAP, data=params, timeout=120)
     r.raise_for_status()
     data = _parse_gaia_csv(r.text)
     return _gaia_rows_to_results(data, ra_center=ra_deg, dec_center=dec_deg)
@@ -1615,7 +1680,7 @@ WHERE gs.source_id = {source_id_int}
             'REQUEST': 'doQuery', 'LANG': 'ADQL', 'FORMAT': 'csv',
             'MAXREC': '10', 'QUERY': adql,
         }
-        r = requests.post(GAIA_TAP, data=params, timeout=60)
+        r = _http_post(GAIA_TAP, data=params, timeout=60)
         r.raise_for_status()
         data = _parse_gaia_csv(r.text)
         return _gaia_rows_to_results(data)
@@ -1640,7 +1705,7 @@ WHERE ra  BETWEEN {ra_deg  - radius_deg} AND {ra_deg  + radius_deg}
         'REQUEST': 'doQuery', 'LANG': 'ADQL', 'FORMAT': 'csv',
         'MAXREC': '200', 'QUERY': adql,
     }
-    r = requests.post(GAIA_TAP, data=params, timeout=60)
+    r = _http_post(GAIA_TAP, data=params, timeout=60)
     r.raise_for_status()
     data = _parse_gaia_csv(r.text)
     return _gaia_rows_to_results(data, ra_center=ra_deg, dec_center=dec_deg)
@@ -1718,7 +1783,11 @@ def _parse_nea_csv(text):
     import csv, io
     lines = text.strip().splitlines()
     if not lines:
-        return []
+        _log.warning('NEA returned an empty response body — possible proxy or firewall interference')
+        raise RuntimeError(
+            "NEA returned an empty response — possible proxy or firewall interference.\n"
+            "Check the log file (Help → View Log) for network details."
+        )
     first = lines[0].strip()
     if first.startswith('<'):
         raise RuntimeError(f"NEA: {first[:300]}")
@@ -1787,7 +1856,7 @@ def _nea_query(where_clause, status_callback, top=None):
         'FORMAT':  'csv',
         'QUERY':   adql,
     }
-    r = requests.post(NEA_TAP, data=params, timeout=60)
+    r = _http_post(NEA_TAP, data=params, timeout=60)
     r.raise_for_status()
     raw_rows = _parse_nea_csv(r.text)
     return [_nea_fmt_row(row) for row in raw_rows]
@@ -1841,17 +1910,84 @@ BANNER_ERR_FG  = "#fab387"
 BANNER_NS_BG   = PANEL
 BANNER_NS_FG   = "#888aaa"
 
-VERSION   = "1.2.0"
+VERSION   = "1.3.0"
 COPYRIGHT = "© Art Trail 2026"
 
 import platform as _platform
 _SYS      = _platform.system()
-UI_FONT   = UI_FONT      if _SYS == 'Windows' else 'Helvetica Neue' if _SYS == 'Darwin' else 'DejaVu Sans'
-MONO_FONT = MONO_FONT      if _SYS == 'Windows' else 'Menlo'          if _SYS == 'Darwin' else 'DejaVu Sans Mono'
+UI_FONT   = 'Segoe UI'   if _SYS == 'Windows' else 'Helvetica Neue' if _SYS == 'Darwin' else 'DejaVu Sans'
+MONO_FONT = 'Consolas'   if _SYS == 'Windows' else 'Menlo'          if _SYS == 'Darwin' else 'DejaVu Sans Mono'
 
 # Auto-run server cooldown: pause for _COOLDOWN_SECS every _COOLDOWN_EVERY targets
 _COOLDOWN_EVERY = 150
 _COOLDOWN_SECS  = 45
+
+# ──────────────────────────────────────────────────────────────
+# Update check
+# ──────────────────────────────────────────────────────────────
+_GH_API_LATEST = 'https://api.github.com/repos/ArtTrail/SOQyT/releases/latest'
+
+
+def _version_is_newer(latest: str, current: str) -> bool:
+    """Return True if latest is strictly greater than current (semantic versioning)."""
+    def _parts(v):
+        try:
+            return tuple(int(x) for x in v.strip().split('.'))
+        except (ValueError, AttributeError):
+            return (0,)
+    return _parts(latest) > _parts(current)
+
+
+def _get_update_platform():
+    """Return the platform token used in SOQyT asset filenames."""
+    s = _platform.system()
+    if s == 'Windows': return 'win64'
+    if s == 'Darwin':  return 'macos'
+    return 'linux'
+
+
+def _check_for_update(ignore_skip=False):
+    """Query GitHub releases API.
+    Returns (version, asset_name, download_url) or None.
+    Respects 'check_for_updates' and 'skip_version' config keys unless ignore_skip=True.
+    """
+    cfg = _load_config()
+    if not cfg.get('check_for_updates', True):
+        _log.info('Update check: disabled by user preference')
+        return None
+    try:
+        r = requests.get(_GH_API_LATEST,
+                         headers={'User-Agent': 'SOQyT-UpdateChecker'},
+                         timeout=15)
+        if r.status_code != 200:
+            _log.warning(f'Update check: HTTP {r.status_code}')
+            return None
+        data = r.json()
+        tag  = data.get('tag_name', '').lstrip('v')
+        if not tag:
+            return None
+        _log.info(f'Update check: latest={tag!r} current={VERSION!r}')
+        if not _version_is_newer(tag, VERSION):
+            _log.info('Update check: already up to date')
+            return None
+        if not ignore_skip and cfg.get('skip_version') == tag:
+            _log.info(f'Update check: v{tag} skipped by user preference')
+            return None
+        # Find the platform-appropriate release asset
+        plat   = _get_update_platform()
+        assets = data.get('assets', [])
+        asset_name = download_url = ''
+        for a in assets:
+            name = a.get('name', '')
+            url  = a.get('browser_download_url', '')
+            if plat in name.lower():
+                asset_name, download_url = name, url
+                break
+        _log.info(f'Update check: v{tag} available | asset={asset_name!r}')
+        return tag, asset_name, download_url
+    except Exception as exc:
+        _log.warning(f'Update check failed: {exc}')
+    return None
 
 
 class StarQueryApp(tk.Tk):
@@ -1966,6 +2102,13 @@ class StarQueryApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"SOQyT — Stellar Object Query Tool  v{VERSION}")
+
+        _log.info('=' * 70)
+        _log.info(f'SOQyT v{VERSION} started')
+        _log.info(f'Platform : {_platform.system()} {_platform.release()} ({_platform.version()})')
+        _log.info(f'Python   : {_sys.version.split()[0]}')
+        _log.info(f'Log file : {_LOG_PATH}')
+        _log.info('=' * 70)
         self.geometry("1700x1450")
         self.minsize(1300, 1100)
         self.configure(bg=BG)
@@ -2006,9 +2149,184 @@ class StarQueryApp(tk.Tk):
         self._batch_filename     = ''
         self._query_pending  = 0
 
+        self._update_version      = ''
+        self._update_asset_name   = ''
+        self._update_download_url = ''
+        self._dont_check_var      = None   # BooleanVar created when banner is shown
+
         self._build_ui()
         self.bind('<Return>', lambda e: self._run_query())
         self.after(200, self._auto_size_pane)
+
+        # Background update check — runs after UI is ready, does not block startup
+        threading.Thread(target=self._bg_update_check, daemon=True).start()
+
+    # ──────────────────────────────────────────────────────────
+    # Update check
+    # ──────────────────────────────────────────────────────────
+
+    def _bg_update_check(self):
+        """Background thread: check GitHub and show banner if a newer version exists."""
+        result = _check_for_update()
+        if result:
+            version, asset_name, download_url = result
+            self.after(0, self._show_update_banner, version, asset_name, download_url)
+
+    def _show_update_banner(self, version, asset_name, download_url):
+        """Store update info and show the 'available' state banner (main thread)."""
+        self._update_version      = version
+        self._update_asset_name   = asset_name
+        self._update_download_url = download_url
+        self._show_banner_available()
+
+    def _banner_bg(self, color):
+        """Set banner frame background and place it in the grid (row 1)."""
+        self._update_banner.config(bg=color)
+        self._update_banner.grid(row=1, column=0, columnspan=2,
+                                 sticky='ew', padx=8, pady=(0, 4))
+
+    def _clear_banner(self):
+        for w in self._update_banner.winfo_children():
+            w.destroy()
+        self._update_banner.columnconfigure(0, weight=1)
+
+    # ── Banner state: available ───────────────────────────────
+    def _show_banner_available(self):
+        self._clear_banner()
+        bg, fg = '#2d3b22', '#a6e3a1'
+        abg     = '#3d5c2e'
+        btn_kw  = dict(bg=bg, fg=fg, relief='flat', font=(UI_FONT, 13),
+                       activebackground=abg, activeforeground='#cdd6f4',
+                       cursor='hand2', padx=8, pady=2)
+        tk.Label(self._update_banner,
+                 text=f'✦  SOQyT v{self._update_version} is available',
+                 bg=bg, fg=fg, font=(UI_FONT, 13, 'bold'),
+                 anchor='w', padx=16).grid(row=0, column=0, sticky='ew')
+        tk.Button(self._update_banner, text='Download',
+                  command=self._download_update, **btn_kw).grid(row=0, column=1, padx=4)
+        # Skip + "Don't check again" grouped in a sub-frame
+        skip_fr = tk.Frame(self._update_banner, bg=bg)
+        skip_fr.grid(row=0, column=2, padx=(4, 12))
+        tk.Button(skip_fr, text='Skip this release',
+                  command=self._skip_update, **btn_kw).pack(side='left')
+        self._dont_check_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(skip_fr, text="Don't check again",
+                       variable=self._dont_check_var,
+                       bg=bg, fg=fg, selectcolor=abg,
+                       activebackground=bg, activeforeground=fg,
+                       font=(UI_FONT, 12)).pack(side='left', padx=(10, 0))
+        self._banner_bg(bg)
+
+    # ── Banner state: downloading ─────────────────────────────
+    def _show_banner_downloading(self):
+        self._clear_banner()
+        bg, fg = '#1a3a4a', '#87ceeb'
+        self._dl_status_var   = tk.StringVar(value='Downloading…')
+        self._dl_progress_var = tk.DoubleVar(value=0)
+        tk.Label(self._update_banner,
+                 textvariable=self._dl_status_var,
+                 bg=bg, fg=fg, font=(UI_FONT, 13),
+                 anchor='w', padx=16).grid(row=0, column=0, sticky='ew')
+        ttk.Progressbar(self._update_banner,
+                         variable=self._dl_progress_var,
+                         maximum=100, length=220,
+                         mode='determinate').grid(row=0, column=1, padx=(0, 16))
+        self._banner_bg(bg)
+
+    def _update_download_progress(self, done, total):
+        pct = done / total * 100 if total else 0
+        self._dl_status_var.set(
+            f'Downloading…  {done / 1_048_576:.1f} MB / {total / 1_048_576:.1f} MB')
+        self._dl_progress_var.set(pct)
+
+    # ── Banner state: done ────────────────────────────────────
+    def _show_banner_done(self, dest_path):
+        self._clear_banner()
+        bg, fg = '#2d3b22', '#a6e3a1'
+        tk.Label(self._update_banner,
+                 text=f'✔  Downloaded to {dest_path} — extract to update.',
+                 bg=bg, fg=fg, font=(UI_FONT, 13),
+                 anchor='w', padx=16).grid(row=0, column=0, sticky='ew')
+        tk.Button(self._update_banner, text='OK',
+                  bg=bg, fg=fg, relief='flat', font=(UI_FONT, 13),
+                  activebackground='#3d5c2e', activeforeground='#cdd6f4',
+                  cursor='hand2', padx=8, pady=2,
+                  command=self._update_banner.grid_remove
+                  ).grid(row=0, column=1, padx=(0, 16))
+        self._banner_bg(bg)
+
+    # ── Banner state: error ───────────────────────────────────
+    def _show_banner_dl_error(self, msg):
+        self._clear_banner()
+        bg, fg = '#4a1a1a', BANNER_ERR_FG
+        tk.Label(self._update_banner,
+                 text=f'✗  Download failed: {msg[:120]}',
+                 bg=bg, fg=fg, font=(UI_FONT, 13),
+                 anchor='w', padx=16).grid(row=0, column=0, sticky='ew')
+        tk.Button(self._update_banner, text='OK',
+                  bg=bg, fg=fg, relief='flat', font=(UI_FONT, 13),
+                  activebackground='#6a2a2a', activeforeground='#cdd6f4',
+                  cursor='hand2', padx=8, pady=2,
+                  command=self._update_banner.grid_remove
+                  ).grid(row=0, column=1, padx=(0, 16))
+        self._banner_bg(bg)
+
+    # ── Actions ───────────────────────────────────────────────
+    def _download_update(self):
+        folder = filedialog.askdirectory(parent=self, title='Choose download folder')
+        if not folder:
+            return
+        dest_path = os.path.join(folder, self._update_asset_name)
+        self._show_banner_downloading()
+        _log.info(f'[Update] Downloading v{self._update_version} → {dest_path}')
+
+        def _do_download():
+            try:
+                with requests.get(self._update_download_url, stream=True,
+                                  headers={'User-Agent': 'SOQyT-UpdateChecker'},
+                                  timeout=(15, 300)) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get('Content-Length', 0))
+                    done  = 0
+                    with open(dest_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                                done += len(chunk)
+                                if total:
+                                    self.after(0, self._update_download_progress,
+                                               done, total)
+                _log.info(f'[Update] Download complete: {dest_path}')
+                self.after(0, self._show_banner_done, dest_path)
+            except Exception as exc:
+                _log.error(f'[Update] Download failed: {exc}', exc_info=True)
+                self.after(0, self._show_banner_dl_error, str(exc))
+
+        threading.Thread(target=_do_download, daemon=True).start()
+
+    def _skip_update(self):
+        if self._dont_check_var and self._dont_check_var.get():
+            _save_config({'check_for_updates': False})
+            _log.info('[Update] User disabled future update checks')
+        else:
+            _save_config({'skip_version': self._update_version})
+            _log.info(f'[Update] User skipped v{self._update_version}')
+        self._update_banner.grid_remove()
+
+    def _manual_check_for_updates(self):
+        """Help-menu triggered update check — ignores skip_version."""
+        _log.info('[Update] Manual check triggered')
+        self._set_status('Checking for updates…')
+
+        def _check():
+            result = _check_for_update(ignore_skip=True)
+            if result:
+                version, asset_name, download_url = result
+                self.after(0, self._show_update_banner, version, asset_name, download_url)
+            else:
+                self.after(0, self._set_status, 'SOQyT is up to date.')
+
+        threading.Thread(target=_check, daemon=True).start()
 
     # ──────────────────────────────────────────────────────────
     # UI construction
@@ -2107,9 +2425,13 @@ class StarQueryApp(tk.Tk):
         right.rowconfigure(0, weight=1)
         self._build_right_panel(right)
 
+        # Update banner — multi-state container; hidden until update found
+        self._update_banner = tk.Frame(self, pady=4)
+        # Not placed in grid yet; _show_banner_available() does grid(row=1, ...)
+
         # Footer: status bar (left) + copyright (right)
         footer = tk.Frame(self, bg=PANEL)
-        footer.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(0, 8), padx=8)
+        footer.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(0, 8), padx=8)
         footer.columnconfigure(0, weight=1)
 
         self._status_var = tk.StringVar(value="Ready.")
@@ -2805,6 +3127,11 @@ class StarQueryApp(tk.Tk):
         mM  = flt['mag_max']
         ot  = flt['otype']
 
+        if mode == 'name':
+            _log.info(f'QUERY {key} | name={name!r} | radius={radius} arcmin')
+        else:
+            _log.info(f'QUERY {key} | coords=({ra_deg:.5f}, {dec_deg:.5f}) | radius={radius} arcmin')
+
         def status_cb(msg):
             self.after(0, self._set_status, msg)
 
@@ -2868,6 +3195,7 @@ class StarQueryApp(tk.Tk):
                     results = query_nea_by_name(name, status_cb)
                 else:
                     results = query_nea(ra_deg, dec_deg, radius, status_cb)
+                _log.info(f'RESULT nea | {len(results)} result(s)')
                 self.after(0, self._populate_nea, results)
                 self.after(0, self._update_tab_text, 'nea', 'NEA', len(results))
                 return
@@ -2875,10 +3203,12 @@ class StarQueryApp(tk.Tk):
             else:
                 results = []
 
+            _log.info(f'RESULT {key} | {len(results)} result(s)')
             self.after(0, self._populate, key, results)
             self.after(0, self._update_tab_text, key, label, len(results))
 
         except Exception as e:
+            _log.error(f'ERROR {key} | {type(e).__name__}: {e}', exc_info=True)
             self.after(0, self._banner_error, key, str(e))
             self.after(0, self._update_tab_text, key, label, 0)
             self.after(0, self._set_status, f"Error querying {label}: {e}")
@@ -3168,8 +3498,8 @@ class StarQueryApp(tk.Tk):
 
         def _q(adql):
             try:
-                r = requests.post(SIMBAD_TAP,
-                                  data={**params_base, 'QUERY': adql}, timeout=30)
+                r = _http_post(SIMBAD_TAP,
+                               data={**params_base, 'QUERY': adql}, timeout=30)
                 r.raise_for_status()
                 return r.json().get('data', [])
             except Exception:
@@ -3278,7 +3608,7 @@ WHERE b.main_id = '{safe_id}'
             # Fallback: ASCII scrape (no titles)
             _BIBPAT = re.compile(r'[12]\d{3}[A-Za-z&][A-Za-z0-9&.]{13}[A-Z]')
             try:
-                _simid_resp = requests.get(
+                _simid_resp = _http_get(
                     "https://simbad.cds.unistra.fr/simbad/sim-id"
                     f"?output.format=ASCII&Ident={urllib.parse.quote(main_id)}",
                     timeout=20
@@ -3855,7 +4185,7 @@ WHERE b.main_id = '{safe_id}'
         """Background thread: fetch VSX star page and parse Remarks + References."""
         try:
             url = f"https://www.aavso.org/vsx/index.php?view=detail.top&oid={oid}"
-            r = requests.get(url, timeout=30)
+            r = _http_get(url, timeout=30)
             r.raise_for_status()
             html = r.text
             result_row['_vsx_remarks'] = _parse_vsx_page_remarks(html)
@@ -4011,10 +4341,121 @@ WHERE b.main_id = '{safe_id}'
 
         hm = tk.Menu(menubar, **item_kw)
         menubar.add_cascade(label="Help", menu=hm)
-        hm.add_command(label="User Guide",       command=self._show_user_guide)
-        hm.add_command(label="Revision History", command=self._show_revision_history)
+        hm.add_command(label="User Guide",          command=self._show_user_guide)
+        hm.add_command(label="Revision History",   command=self._show_revision_history)
         hm.add_separator()
-        hm.add_command(label="About SOQyT…",     command=self._show_about)
+        hm.add_command(label="Check for Updates",  command=self._manual_check_for_updates)
+        hm.add_command(label="View Log…",          command=self._show_log_viewer)
+        hm.add_separator()
+        hm.add_command(label="About SOQyT…",       command=self._show_about)
+
+    def _show_log_viewer(self):
+        """Open a scrollable viewer for the SOQyT log file."""
+        win = tk.Toplevel(self)
+        win.title("SOQyT Log Viewer")
+        win.geometry("1000x640")
+        win.minsize(700, 400)
+        win.configure(bg=BG)
+
+        # ── Toolbar ──────────────────────────────────────────────
+        tb = tk.Frame(win, bg=PANEL, pady=5)
+        tb.pack(fill='x')
+
+        txt_ref = [None]  # mutable ref for callbacks
+
+        def _refresh():
+            t = txt_ref[0]
+            if t is None:
+                return
+            t.config(state='normal')
+            t.delete('1.0', 'end')
+            try:
+                with open(_LOG_PATH, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = '(log file not found)'
+            for line in content.splitlines():
+                if '[ERROR  ]' in line or '[CRITICAL]' in line:
+                    tag = 'err'
+                elif '[WARNING]' in line:
+                    tag = 'warn'
+                elif '[DEBUG  ]' in line:
+                    tag = 'dbg'
+                elif '=' * 10 in line:
+                    tag = 'sep'
+                else:
+                    tag = 'info'
+                t.insert('end', line + '\n', tag)
+            t.config(state='disabled')
+            t.see('end')
+
+        def _open_editor():
+            try:
+                if _sys.platform == 'win32':
+                    os.startfile(_LOG_PATH)
+                else:
+                    webbrowser.open(f'file://{_LOG_PATH}')
+            except Exception:
+                pass
+
+        def _copy_all():
+            t = txt_ref[0]
+            if t is None:
+                return
+            self.clipboard_clear()
+            self.clipboard_append(t.get('1.0', 'end'))
+
+        def _save_log():
+            path = filedialog.asksaveasfilename(
+                parent=win,
+                title='Save Log File',
+                defaultextension='.log',
+                initialfile='soqyt_log.log',
+                filetypes=[('Log files', '*.log'),
+                           ('Text files', '*.txt'),
+                           ('All files',  '*.*')],
+            )
+            if not path:
+                return
+            try:
+                import shutil
+                shutil.copy2(_LOG_PATH, path)
+            except Exception as e:
+                messagebox.showerror('Save Failed', str(e), parent=win)
+
+        btn_kw = dict(bg=PANEL, fg=FG, relief='flat', font=(UI_FONT, 11),
+                      activebackground=ACC, activeforeground=BG, padx=10, pady=2)
+        tk.Button(tb, text='↻  Refresh',        command=_refresh,     **btn_kw).pack(side='left', padx=6)
+        tk.Button(tb, text='📂  Open in Editor', command=_open_editor, **btn_kw).pack(side='left', padx=2)
+        tk.Button(tb, text='⧉  Copy All',        command=_copy_all,   **btn_kw).pack(side='left', padx=2)
+        tk.Button(tb, text='💾  Save…',           command=_save_log,   **btn_kw).pack(side='left', padx=2)
+        tk.Label(tb, text=f'  {_LOG_PATH}', bg=PANEL, fg='#6c7086',
+                 font=(UI_FONT, 10)).pack(side='right', padx=10)
+
+        # ── Text area ─────────────────────────────────────────────
+        frm = tk.Frame(win, bg=BG)
+        frm.pack(fill='both', expand=True, padx=8, pady=(4, 8))
+
+        xsb = tk.Scrollbar(frm, orient='horizontal', bg=PANEL)
+        xsb.pack(side='bottom', fill='x')
+        ysb = tk.Scrollbar(frm, bg=PANEL)
+        ysb.pack(side='right', fill='y')
+
+        txt = tk.Text(frm, bg=ENT, fg=FG, font=(MONO_FONT, 10), wrap='none',
+                      yscrollcommand=ysb.set, xscrollcommand=xsb.set,
+                      state='disabled', relief='flat', cursor='arrow')
+        txt.pack(fill='both', expand=True)
+        ysb.config(command=txt.yview)
+        xsb.config(command=txt.xview)
+
+        txt.tag_config('err',  foreground=BANNER_ERR_FG)
+        txt.tag_config('warn', foreground='#f9e2af')
+        txt.tag_config('info', foreground=FG)
+        txt.tag_config('dbg',  foreground='#6c7086')
+        txt.tag_config('sep',  foreground=ACC)
+
+        txt_ref[0] = txt
+        _refresh()
 
     def _show_about(self):
         win = tk.Toplevel(self)
@@ -4907,6 +5348,38 @@ WHERE b.main_id = '{safe_id}'
             for b in bullets:
                 txt.insert("end", f"  •  {b}\n\n", "bullet")
             txt.insert("end", "\n")
+
+        entry("v1.3.0", "2026-05-23", [
+            "Comprehensive error logging: every HTTP request (URL, ADQL query preview, "
+            "HTTP status, response size, elapsed time) and every exception with full "
+            "traceback is now written to soqyt_log.log alongside the executable. "
+            "The previous session's log is preserved as soqyt_log.log.bak.",
+            "Log viewer: Help → View Log opens a scrollable, colour-coded log window "
+            "with Refresh, Open in Editor, Copy All, and Save buttons for easy "
+            "diagnostics and sharing with support.",
+            "Automatic update check: SOQyT queries the GitHub releases API at startup "
+            "in a background thread (startup is never delayed). If a newer version is "
+            "available, a green banner appears below the menu bar with Download and "
+            "Skip this release buttons. Download prompts for a save folder then streams "
+            "the platform zip with a live progress bar. Skip this release records the "
+            "version so the banner does not reappear; ticking 'Don't check again' "
+            "disables future automatic checks. Help → Check for Updates triggers a "
+            "manual check at any time (ignoring any skipped-version preference).",
+            "Each query start (catalog, mode, search term / coordinates, radius) and "
+            "result count are logged at INFO level; HTTP details at DEBUG level; "
+            "failures at ERROR level with full Python traceback.",
+            "App startup now logs SOQyT version, OS, and Python version.",
+            "NEA empty-response guard: an empty HTTP response body from the NASA "
+            "Exoplanet Archive now raises a descriptive error (shown as a red banner "
+            "in the NEA tab) rather than silently returning 0 results — this makes "
+            "proxy or firewall interference immediately visible.",
+        ])
+
+        entry("v1.2.1", "2026-05-22", [
+            "Bug fix: application failed to launch on Windows with 'name UI_FONT is not "
+            "defined' error — the Windows font name strings ('Segoe UI' / 'Consolas') were "
+            "accidentally replaced with self-references during v1.2.0 development.",
+        ])
 
         entry("v1.2.0", "2026-05-21", [
             "SIMBAD extended data (spectral type, parallax, proper motion, radial velocity, "

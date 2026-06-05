@@ -50,6 +50,16 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
+def _resource_path(filename):
+    """Return absolute path to a bundled resource.
+    Works both when running as a script and as a PyInstaller onedir exe."""
+    if getattr(_sys, 'frozen', False):
+        base = _sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, filename)
+
+
 # ──────────────────────────────────────────────────────────────
 # Logging
 # ──────────────────────────────────────────────────────────────
@@ -366,6 +376,16 @@ def _passes_filters(period_val, mag_val, period_min, period_max, mag_min, mag_ma
     return True
 
 
+def _compute_amplitude(minmag_str, maxmag_str):
+    """Return amplitude (MinMag − MaxMag) from string values.
+    Returns None if either value is missing or non-numeric."""
+    lo = _try_float(minmag_str)
+    hi = _try_float(maxmag_str)
+    if lo is None or hi is None:
+        return None
+    return lo - hi
+
+
 # ──────────────────────────────────────────────────────────────
 # SIMBAD queries
 # ──────────────────────────────────────────────────────────────
@@ -502,6 +522,47 @@ WHERE CONTAINS(POINT('ICRS', b.ra, b.dec),
 
     return _build_simbad_results(data, period_min, period_max, mag_min, mag_max,
                                   ra_center=ra_deg, dec_center=dec_deg)
+
+
+def query_simbad_no_coords(otype_filter, period_min, period_max, mag_min, mag_max,
+                            status_callback):
+    """Non-spatial SIMBAD query — uses only period/mag/otype as WHERE clauses.
+    Uses INNER JOIN on mesVar when a period filter is set so only objects with
+    period data are returned; LEFT JOIN otherwise."""
+    has_period_filter = (period_min is not None or period_max is not None)
+    join_type = "INNER JOIN" if has_period_filter else "LEFT JOIN"
+
+    clauses = []
+    if otype_filter and otype_filter != 'All':
+        safe_ot = otype_filter.replace("'", "''")
+        clauses.append(f"b.otype = '{safe_ot}'")
+    if period_min is not None:
+        clauses.append(f"v.period >= {period_min}")
+    if period_max is not None:
+        clauses.append(f"v.period <= {period_max}")
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    adql = (
+        "SELECT TOP 500 b.main_id, b.ra, b.dec, b.otype, "
+        "v.vartyp, v.period, v.vmax, v.vmin, v.magtyp, v.bibcode "
+        f"FROM basic b {join_type} mesVar v ON b.oid = v.oidref {where}"
+    ).strip()
+
+    if status_callback:
+        status_callback("Querying SIMBAD (filter-only scan)...")
+    params = {
+        'REQUEST': 'doQuery',
+        'LANG': 'ADQL',
+        'FORMAT': 'json',
+        'QUERY': adql,
+    }
+    r = _http_post(SIMBAD_TAP, data=params, timeout=60)
+    r.raise_for_status()
+    data = r.json().get('data', [])
+
+    return _build_simbad_results(data, period_min, period_max, mag_min, mag_max,
+                                  ra_center=None, dec_center=None)
 
 
 def query_simbad_by_name(name, period_min, period_max, mag_min, mag_max,
@@ -729,7 +790,8 @@ def _parse_vsx_object(obj, ra_center=None, dec_center=None):
     }
 
 
-def query_vsx_by_name(name, period_min, period_max, mag_min, mag_max, status_callback):
+def query_vsx_by_name(name, period_min, period_max, mag_min, mag_max,
+                      amp_min, vartype, status_callback):
     """Name-based VSX query."""
     if status_callback:
         status_callback("Querying AAVSO VSX...")
@@ -751,6 +813,15 @@ def query_vsx_by_name(name, period_min, period_max, mag_min, mag_max, status_cal
     if not _passes_filters(result['Period'], result['MaxMag'],
                            period_min, period_max, mag_min, mag_max):
         return []
+    # VarType filter (client-side for name lookup — single object returned)
+    if vartype and vartype != 'All':
+        if vartype.lower() not in (result.get('VarType') or '').lower():
+            return []
+    # Amplitude filter
+    if amp_min is not None:
+        amp = _compute_amplitude(result['MinMag'], result['MaxMag'])
+        if amp is None or amp < amp_min:
+            return []
     # Remove internal keys
     result.pop('_ra_deg', None)
     result.pop('_dec_deg', None)
@@ -758,25 +829,35 @@ def query_vsx_by_name(name, period_min, period_max, mag_min, mag_max, status_cal
 
 
 def query_vsx(ra_deg, dec_deg, radius_arcmin, period_min, period_max,
-              mag_min, mag_max, status_callback):
-    """Coordinate-based VSX query."""
+              mag_min, mag_max, amp_min, vartype, status_callback):
+    """Coordinate-based VSX cone search with optional filters.
+    Requires ra_deg/dec_deg/radius_arcmin — the VSX api.list endpoint does not
+    support coordinate-free queries and returns an empty response without them."""
     if status_callback:
         status_callback("Querying AAVSO VSX...")
 
-    radius_deg = radius_arcmin / 60.0
     params = {
-        'view': 'api.list',
+        'view':   'api.list',
         'format': 'json',
-        'ra': ra_deg,
-        'dec': dec_deg,
-        'radius': radius_deg,
+        'ra':     ra_deg,
+        'dec':    dec_deg,
+        'radius': radius_arcmin / 60.0,
         'coords': 'decimal',
     }
+    # vartype is a native server-side filter on the api.list endpoint
+    if vartype and vartype != 'All':
+        params['vartype'] = vartype
     r = _http_get(VSX_BASE, params=params, timeout=30)
     r.raise_for_status()
     j = r.json()
 
-    raw = j.get('VSXObjects', {}).get('VSXObject', [])
+    # The API normally returns {"VSXObjects": {"VSXObject": [...]}} but can return
+    # {"VSXObjects": []} (list instead of dict) when there are no results.
+    vsx_objects = j.get('VSXObjects', {}) if isinstance(j, dict) else {}
+    if isinstance(vsx_objects, dict):
+        raw = vsx_objects.get('VSXObject', [])
+    else:
+        raw = []
     if isinstance(raw, dict):
         raw = [raw]
 
@@ -786,6 +867,10 @@ def query_vsx(ra_deg, dec_deg, radius_arcmin, period_min, period_max,
         if not _passes_filters(result['Period'], result['MaxMag'],
                                period_min, period_max, mag_min, mag_max):
             continue
+        if amp_min is not None:
+            amp = _compute_amplitude(result['MinMag'], result['MaxMag'])
+            if amp is None or amp < amp_min:
+                continue
         result.pop('_ra_deg', None)
         result.pop('_dec_deg', None)
         results.append(result)
@@ -1219,27 +1304,84 @@ def _parse_wds_designation(name):
     return m.group(1) if m else None
 
 
+_WDS_COLS = ('t.RAJ2000, t.DEJ2000, t.WDS, t.Disc, t.Comp,'
+             ' t.Obs1, t.Obs2, t.Nobs, t.pa1, t.pa2, t.sep1, t.sep2,'
+             ' t.mag1, t.mag2, t.SpType')
+
+
 def _wds_adql_by_designation(desig):
     safe = desig.replace("'", "''")
-    return f"""
-SELECT t.RAJ2000, t.DEJ2000, t.WDS, t.Disc, t.Comp,
-       t.Obs1, t.Obs2, t.Nobs, t.pa1, t.pa2, t.sep1, t.sep2,
-       t.mag1, t.mag2, t.SpType
-FROM "B/wds/wds" AS t
-WHERE t.WDS = '{safe}'
-""".strip()
+    return (f'SELECT {_WDS_COLS} FROM "B/wds/wds" AS t'
+            f" WHERE t.WDS = '{safe}'")
 
 
 def _wds_adql_cone(ra_deg, dec_deg, radius_deg):
     # RAJ2000/DEJ2000 are in degrees despite catalog description saying "hours"
-    return f"""
-SELECT t.RAJ2000, t.DEJ2000, t.WDS, t.Disc, t.Comp,
-       t.Obs1, t.Obs2, t.Nobs, t.pa1, t.pa2, t.sep1, t.sep2,
-       t.mag1, t.mag2, t.SpType
-FROM "B/wds/wds" AS t
-WHERE CONTAINS(POINT('ICRS', t.RAJ2000, t.DEJ2000),
-               CIRCLE('ICRS', {ra_deg}, {dec_deg}, {radius_deg})) = 1
-""".strip()
+    return (f'SELECT {_WDS_COLS} FROM "B/wds/wds" AS t'
+            f' WHERE CONTAINS(POINT(\'ICRS\', t.RAJ2000, t.DEJ2000),'
+            f' CIRCLE(\'ICRS\', {ra_deg}, {dec_deg}, {radius_deg})) = 1')
+
+
+def _wds_adql_with_filters(flt, cone_ra=None, cone_dec=None,
+                            cone_radius_deg=None, designation=None):
+    """Build a WDS ADQL query with optional filter conditions.
+
+    Spatial constraint priority:
+      1. ``designation`` — exact WDS column match (name-mode lookup)
+      2. RA/Dec range in ``flt``  — box query (sky-area scan)
+      3. cone params — CIRCLE query (coords-mode cone search)
+    All non-spatial filters in ``flt`` are appended as AND conditions.
+    """
+    conditions = []
+
+    # ── Spatial ──────────────────────────────────────────────────
+    if designation:
+        safe = designation.replace("'", "''")
+        conditions.append(f"t.WDS = '{safe}'")
+    else:
+        has_ra  = flt.get('ra_from')  is not None or flt.get('ra_to')  is not None
+        has_dec = flt.get('dec_from') is not None or flt.get('dec_to') is not None
+        if has_ra or has_dec:
+            if flt.get('ra_from') is not None:
+                conditions.append(f"t.RAJ2000 >= {flt['ra_from']:.6f}")
+            if flt.get('ra_to') is not None:
+                conditions.append(f"t.RAJ2000 <= {flt['ra_to']:.6f}")
+            if flt.get('dec_from') is not None:
+                conditions.append(f"t.DEJ2000 >= {flt['dec_from']:.6f}")
+            if flt.get('dec_to') is not None:
+                conditions.append(f"t.DEJ2000 <= {flt['dec_to']:.6f}")
+        elif cone_ra is not None and cone_dec is not None and cone_radius_deg is not None:
+            conditions.append(
+                f"CONTAINS(POINT('ICRS', t.RAJ2000, t.DEJ2000),"
+                f" CIRCLE('ICRS', {cone_ra}, {cone_dec}, {cone_radius_deg})) = 1"
+            )
+
+    # ── Column filters ────────────────────────────────────────────
+    if flt.get('sep_min') is not None:
+        conditions.append(f"t.sep2 >= {flt['sep_min']}")
+    if flt.get('sep_max') is not None:
+        conditions.append(f"t.sep2 <= {flt['sep_max']}")
+    if flt.get('mag1_min') is not None:
+        conditions.append(f"t.mag1 >= {flt['mag1_min']}")
+    if flt.get('mag1_max') is not None:
+        conditions.append(f"t.mag1 <= {flt['mag1_max']}")
+    if flt.get('mag2_min') is not None:
+        conditions.append(f"t.mag2 >= {flt['mag2_min']}")
+    if flt.get('mag2_max') is not None:
+        conditions.append(f"t.mag2 <= {flt['mag2_max']}")
+    if flt.get('pa_min') is not None:
+        conditions.append(f"t.pa2 >= {flt['pa_min']}")
+    if flt.get('pa_max') is not None:
+        conditions.append(f"t.pa2 <= {flt['pa_max']}")
+    if flt.get('nobs_min') is not None:
+        conditions.append(f"t.Nobs >= {flt['nobs_min']}")
+    if flt.get('year_from') is not None:
+        conditions.append(f"t.Obs2 >= {flt['year_from']}")
+    if flt.get('year_to') is not None:
+        conditions.append(f"t.Obs2 <= {flt['year_to']}")
+
+    where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
+    return f'SELECT {_WDS_COLS} FROM "B/wds/wds" AS t{where}'
 
 
 def _wds_row_to_result(row, ra_center=None, dec_center=None):
@@ -1300,14 +1442,16 @@ def _wds_row_to_result(row, ra_center=None, dec_center=None):
     }
 
 
-def query_wds_by_name(name, radius_arcmin, status_callback):
+def query_wds_by_name(name, radius_arcmin, status_callback, wds_flt=None):
     if status_callback:
         status_callback("Querying WDS...")
+    flt = wds_flt or {}
     # Primary path: if name looks like a WDS designation, look up directly by WDS column.
     # This is exact and avoids any coordinate/radius ambiguity.
+    # Non-positional filters are applied alongside the designation match.
     desig = _parse_wds_designation(name)
     if desig is not None:
-        data = _vizier_post(_wds_adql_by_designation(desig))
+        data = _vizier_post(_wds_adql_with_filters(flt, designation=desig))
         if data:
             return [_wds_row_to_result(row) for row in data]
     # Fallback: resolve general star names via SIMBAD then cone search.
@@ -1318,14 +1462,19 @@ def query_wds_by_name(name, radius_arcmin, status_callback):
         return []
     if status_callback:
         status_callback("Querying WDS...")
-    data = _vizier_post(_wds_adql_cone(ra_deg, dec_deg, radius_arcmin / 60.0))
+    data = _vizier_post(_wds_adql_with_filters(
+        flt, cone_ra=ra_deg, cone_dec=dec_deg,
+        cone_radius_deg=radius_arcmin / 60.0))
     return _sort_by_dist([_wds_row_to_result(row, ra_center=ra_deg, dec_center=dec_deg) for row in data])
 
 
-def query_wds(ra_deg, dec_deg, radius_arcmin, status_callback):
+def query_wds(ra_deg, dec_deg, radius_arcmin, status_callback, wds_flt=None):
     if status_callback:
         status_callback("Querying WDS...")
-    data = _vizier_post(_wds_adql_cone(ra_deg, dec_deg, radius_arcmin / 60.0))
+    flt = wds_flt or {}
+    data = _vizier_post(_wds_adql_with_filters(
+        flt, cone_ra=ra_deg, cone_dec=dec_deg,
+        cone_radius_deg=radius_arcmin / 60.0 if radius_arcmin else None))
     return _sort_by_dist([_wds_row_to_result(row, ra_center=ra_deg, dec_center=dec_deg) for row in data])
 
 
@@ -1559,6 +1708,26 @@ def _resolve_name_simbad(name):
             rows = _parse_gaia_csv(r.text)
             if rows and rows[0].get('ra') is not None:
                 return float(rows[0]['ra']), float(rows[0]['dec'])
+        except Exception:
+            pass
+
+    # WDS designation fallback — query VizieR for precise RAJ2000/DEJ2000 when SIMBAD
+    # doesn't recognise the name (common for WDS-only objects).  Parsing RA/Dec from
+    # the designation string itself is only accurate to ~1 arcmin, which is not reliable
+    # for cone searches; the VizieR lookup returns the exact catalog position.
+    desig = _parse_wds_designation(name)
+    if desig is not None:
+        try:
+            safe_desig = desig.replace("'", "''")
+            data = _vizier_post(
+                f'SELECT t.RAJ2000, t.DEJ2000 FROM "B/wds/wds" AS t'
+                f" WHERE t.WDS = '{safe_desig}'"
+            )
+            if data and data[0][0] is not None and data[0][1] is not None:
+                wds_ra  = float(data[0][0])
+                wds_dec = float(data[0][1])
+                _log.debug(f'  ↳ coords from VizieR WDS lookup: ({wds_ra:.4f}, {wds_dec:.4f})')
+                return wds_ra, wds_dec
         except Exception:
             pass
 
@@ -1918,7 +2087,7 @@ BANNER_ERR_FG  = "#fab387"
 BANNER_NS_BG   = PANEL
 BANNER_NS_FG   = "#888aaa"
 
-VERSION   = "1.3.0"
+VERSION   = "1.3.2"
 COPYRIGHT = "© Art Trail 2026"
 
 import platform as _platform
@@ -2120,6 +2289,10 @@ class StarQueryApp(tk.Tk):
         self.geometry("1700x1450")
         self.minsize(1300, 1100)
         self.configure(bg=BG)
+        try:
+            self.iconbitmap(_resource_path('SOQyT.ico'))
+        except Exception:
+            pass  # Icon is non-critical; silently skip if unavailable
 
         _all_keys = (
             [k for k, _, _ in self.TABS if k != 'vizier'] +
@@ -2154,6 +2327,7 @@ class StarQueryApp(tk.Tk):
         self._batch_radius    = 1.0
         self._auto_run           = False
         self._auto_run_after_id  = None
+        self._auto_run_start_time = None
         self._batch_filename     = ''
         self._query_pending  = 0
 
@@ -2332,7 +2506,13 @@ class StarQueryApp(tk.Tk):
                 version, asset_name, download_url = result
                 self.after(0, self._show_update_banner, version, asset_name, download_url)
             else:
-                self.after(0, self._set_status, 'SOQyT is up to date.')
+                def _notify():
+                    self._set_status('SOQyT is up to date.')
+                    messagebox.showinfo(
+                        "SOQyT — Check for Updates",
+                        f"You are running the latest version of SOQyT ({VERSION})."
+                    )
+                self.after(0, _notify)
 
         threading.Thread(target=_check, daemon=True).start()
 
@@ -2420,7 +2600,7 @@ class StarQueryApp(tk.Tk):
         self.rowconfigure(0, weight=1)
 
         # Left panel — scrollable canvas so it never clips on small screens
-        left_outer = tk.Frame(self, bg=PANEL, width=230)
+        left_outer = tk.Frame(self, bg=PANEL, width=290)
         left_outer.grid(row=0, column=0, sticky='nsew', padx=(8, 0), pady=8)
         left_outer.grid_propagate(False)
         left_outer.columnconfigure(0, weight=1)
@@ -2681,6 +2861,21 @@ class StarQueryApp(tk.Tk):
 
         self._src_vars = {}
         for key, label, _ in self.TABS:
+            if key == 'vizier':
+                # VizieR: section label + individual checkbox per sub-tab
+                tk.Label(body_src, text="VizieR", bg=PANEL, fg=FG,
+                         font=(UI_FONT, 11), anchor='w').pack(fill='x', padx=8, pady=(4, 0))
+                for vk, vlabel, _ in self.VIZIER_SUBTABS:
+                    vvar = tk.BooleanVar(value=True)
+                    self._src_vars[vk] = vvar
+                    tk.Checkbutton(body_src, text=vlabel, variable=vvar,
+                                   bg=PANEL, fg=FG, selectcolor=ENT,
+                                   activebackground=PANEL, activeforeground=FG,
+                                   anchor='w', font=(UI_FONT, 11)).pack(
+                                       fill='x', padx=(22, 4), pady=1)
+                    if vk == 'wds':
+                        self._build_wds_filters(body_src)
+                continue
             var = tk.BooleanVar(value=True)
             self._src_vars[key] = var
             row_f = tk.Frame(body_src, bg=PANEL)
@@ -2695,45 +2890,11 @@ class StarQueryApp(tk.Tk):
                           activebackground=PANEL, activeforeground=FG,
                           cursor='hand2',
                           command=self._show_simbad_meas_popup).pack(side='right', padx=(0, 6))
-                # SIMBAD filters — indented under SIMBAD row
-                flt_f = tk.Frame(body_src, bg=PANEL)
-                flt_f.pack(fill='x', padx=(24, 4), pady=(0, 6))
-                tk.Label(flt_f, text="Object Type:", bg=PANEL, fg=FG,
-                         font=(UI_FONT, 10)).pack(fill='x', pady=(2, 0))
-                otype_vals = ['All', 'RR*', 'Ce*', 'dS*', 'RV*', 'LP*', 'SR*', 'Mi*', 'Ell*', 'Ro*', 'EB*', 'WV*']
-                self._otype_var = tk.StringVar(value='All')
-                self._otype_combo = ttk.Combobox(flt_f, textvariable=self._otype_var,
-                                                  values=otype_vals, state='readonly')
-                self._otype_combo.pack(fill='x', pady=2)
-                tk.Label(flt_f, text="Period range (days):", bg=PANEL, fg=FG,
-                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
-                pf = tk.Frame(flt_f, bg=PANEL)
-                pf.pack(fill='x', pady=2)
-                self._period_min_var = tk.StringVar()
-                self._period_max_var = tk.StringVar()
-                ttk.Entry(pf, textvariable=self._period_min_var, width=7).pack(side='left')
-                tk.Label(pf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
-                ttk.Entry(pf, textvariable=self._period_max_var, width=7).pack(side='left')
-                tk.Label(flt_f, text="Max Mag range:", bg=PANEL, fg=FG,
-                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
-                mf = tk.Frame(flt_f, bg=PANEL)
-                mf.pack(fill='x', pady=2)
-                self._mag_min_var = tk.StringVar()
-                self._mag_max_var = tk.StringVar()
-                ttk.Entry(mf, textvariable=self._mag_min_var, width=7).pack(side='left')
-                tk.Label(mf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
-                ttk.Entry(mf, textvariable=self._mag_max_var, width=7).pack(side='left')
-                tk.Label(flt_f, text="Ref year range:", bg=PANEL, fg=FG,
-                         font=(UI_FONT, 10)).pack(fill='x', pady=(4, 0))
-                yf = tk.Frame(flt_f, bg=PANEL)
-                yf.pack(fill='x', pady=2)
-                self._ref_year_from_var = tk.StringVar()
-                self._ref_year_to_var   = tk.StringVar(value=str(datetime.date.today().year))
-                ttk.Entry(yf, textvariable=self._ref_year_from_var, width=7).pack(side='left')
-                tk.Label(yf, text=' – ', bg=PANEL, fg=FG, font=(UI_FONT, 10)).pack(side='left')
-                ttk.Entry(yf, textvariable=self._ref_year_to_var, width=7).pack(side='left')
-                self._ref_year_from_var.trace_add('write', self._on_ref_year_filter_change)
-                self._ref_year_to_var.trace_add('write', self._on_ref_year_filter_change)
+                # SIMBAD filters — collapsible section under SIMBAD row
+                self._build_simbad_filters(body_src)
+            if key == 'vsx':
+                # VSX filters — collapsible section under AAVSO VSX row
+                self._build_vsx_filters(body_src)
             if key == 'gaia':
                 tk.Button(row_f, text='⚙', bg=PANEL, fg=ACC,
                           relief='flat', bd=0, font=(UI_FONT, 12),
@@ -2778,6 +2939,11 @@ class StarQueryApp(tk.Tk):
             command=lambda: self._batch_go(1))
         self._batch_next_btn.pack(side='right')
 
+        self._batch_timer_label = tk.Label(
+            self._batch_nav_frame, text="", bg=PANEL, fg=BANNER_NS_FG,
+            font=(UI_FONT, 9), anchor='center')
+        # not packed initially — shown only during auto-run
+
         self._batch_export_btn = ttk.Button(
             self._batch_nav_frame, text="⬇  Export Batch Results",
             command=self._export_batch)
@@ -2800,6 +2966,277 @@ class StarQueryApp(tk.Tk):
         self._batch_close_btn.pack(padx=10, pady=(0, 8))
 
         self._toggle_mode()
+
+    def _build_wds_filters(self, parent):
+        """Build the collapsible WDS filter sub-section in the left panel."""
+        # ── toggle header ─────────────────────────────────────────
+        container = tk.Frame(parent, bg=PANEL)
+        container.pack(fill='x', padx=(36, 4), pady=(0, 4))
+
+        open_state = [False]
+        arrow = tk.Label(container, text='▶  WDS Filters',
+                         bg=PANEL, fg=ACC, font=(UI_FONT, 9, 'bold'),
+                         cursor='hand2', anchor='w')
+        arrow.pack(fill='x')
+
+        body = tk.Frame(container, bg=PANEL)
+        # not packed initially (collapsed by default)
+
+        def _toggle(e=None):
+            open_state[0] = not open_state[0]
+            if open_state[0]:
+                body.pack(fill='x')
+                arrow.config(text='▼  WDS Filters')
+            else:
+                body.pack_forget()
+                arrow.config(text='▶  WDS Filters')
+        arrow.bind('<Button-1>', _toggle)
+
+        # ── helpers ───────────────────────────────────────────────
+        def _range_row(label_text, var_from, var_to):
+            tk.Label(body, text=label_text, bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(fill='x', pady=(3, 0))
+            rf = tk.Frame(body, bg=PANEL)
+            rf.pack(fill='x', pady=1)
+            ttk.Entry(rf, textvariable=var_from, width=9).pack(side='left')
+            tk.Label(rf, text=' – ', bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(side='left')
+            ttk.Entry(rf, textvariable=var_to, width=9).pack(side='left')
+
+        def _single_row(label_text, var, width=9):
+            rf = tk.Frame(body, bg=PANEL)
+            rf.pack(fill='x', pady=(3, 1))
+            tk.Label(rf, text=label_text, bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(side='left')
+            ttk.Entry(rf, textvariable=var, width=width).pack(side='left', padx=(4, 0))
+
+        # ── filter vars & widgets ─────────────────────────────────
+        self._wds_ra_from_var  = tk.StringVar()
+        self._wds_ra_to_var    = tk.StringVar()
+        _range_row("RA (h):", self._wds_ra_from_var, self._wds_ra_to_var)
+
+        self._wds_dec_from_var = tk.StringVar()
+        self._wds_dec_to_var   = tk.StringVar()
+        _range_row("Dec (°):", self._wds_dec_from_var, self._wds_dec_to_var)
+
+        self._wds_sep_min_var  = tk.StringVar()
+        self._wds_sep_max_var  = tk.StringVar()
+        _range_row('Sep ("):',   self._wds_sep_min_var,  self._wds_sep_max_var)
+
+        self._wds_mag1_min_var = tk.StringVar()
+        self._wds_mag1_max_var = tk.StringVar()
+        _range_row("Mag primary:", self._wds_mag1_min_var, self._wds_mag1_max_var)
+
+        self._wds_mag2_min_var = tk.StringVar()
+        self._wds_mag2_max_var = tk.StringVar()
+        _range_row("Mag secondary:", self._wds_mag2_min_var, self._wds_mag2_max_var)
+
+        self._wds_pa_min_var   = tk.StringVar()
+        self._wds_pa_max_var   = tk.StringVar()
+        _range_row("PA (°):",   self._wds_pa_min_var,   self._wds_pa_max_var)
+
+        self._wds_nobs_min_var = tk.StringVar()
+        _single_row("N obs ≥:",  self._wds_nobs_min_var)
+
+        self._wds_year_from_var = tk.StringVar()
+        self._wds_year_to_var   = tk.StringVar()
+        _range_row("Last obs year:", self._wds_year_from_var, self._wds_year_to_var)
+
+        # Clear button
+        def _clear_wds_filters():
+            for v in (self._wds_ra_from_var, self._wds_ra_to_var,
+                      self._wds_dec_from_var, self._wds_dec_to_var,
+                      self._wds_sep_min_var, self._wds_sep_max_var,
+                      self._wds_mag1_min_var, self._wds_mag1_max_var,
+                      self._wds_mag2_min_var, self._wds_mag2_max_var,
+                      self._wds_pa_min_var, self._wds_pa_max_var,
+                      self._wds_nobs_min_var,
+                      self._wds_year_from_var, self._wds_year_to_var):
+                v.set('')
+        tk.Button(body, text="Clear WDS Filters", bg=PANEL, fg='#888',
+                  relief='flat', bd=0, font=(UI_FONT, 9), cursor='hand2',
+                  activebackground=PANEL,
+                  command=_clear_wds_filters).pack(anchor='w', pady=(6, 2))
+
+    def _build_simbad_filters(self, parent):
+        """Build the collapsible SIMBAD filter sub-section in the left panel."""
+        # ── toggle header ─────────────────────────────────────────
+        container = tk.Frame(parent, bg=PANEL)
+        container.pack(fill='x', padx=(24, 4), pady=(0, 4))
+
+        open_state = [False]
+        arrow = tk.Label(container, text='▶  SIMBAD Filters',
+                         bg=PANEL, fg=ACC, font=(UI_FONT, 9, 'bold'),
+                         cursor='hand2', anchor='w')
+        arrow.pack(fill='x')
+
+        body = tk.Frame(container, bg=PANEL)
+        # not packed initially (collapsed by default)
+
+        def _toggle(e=None):
+            open_state[0] = not open_state[0]
+            if open_state[0]:
+                body.pack(fill='x')
+                arrow.config(text='▼  SIMBAD Filters')
+            else:
+                body.pack_forget()
+                arrow.config(text='▶  SIMBAD Filters')
+        arrow.bind('<Button-1>', _toggle)
+
+        # ── helpers ───────────────────────────────────────────────
+        def _range_row(label_text, var_from, var_to):
+            tk.Label(body, text=label_text, bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(fill='x', pady=(3, 0))
+            rf = tk.Frame(body, bg=PANEL)
+            rf.pack(fill='x', pady=1)
+            ttk.Entry(rf, textvariable=var_from, width=7).pack(side='left')
+            tk.Label(rf, text=' – ', bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(side='left')
+            ttk.Entry(rf, textvariable=var_to, width=7).pack(side='left')
+
+        # ── filter vars & widgets ─────────────────────────────────
+        tk.Label(body, text="Object Type:", bg=PANEL, fg=FG,
+                 font=(UI_FONT, 10)).pack(fill='x', pady=(2, 0))
+        otype_vals = ['All', 'RR*', 'Ce*', 'dS*', 'RV*', 'LP*', 'SR*',
+                      'Mi*', 'Ell*', 'Ro*', 'EB*', 'WV*']
+        self._otype_var   = tk.StringVar(value='All')
+        self._otype_combo = ttk.Combobox(body, textvariable=self._otype_var,
+                                         values=otype_vals, state='readonly')
+        self._otype_combo.pack(fill='x', pady=2)
+
+        self._period_min_var = tk.StringVar()
+        self._period_max_var = tk.StringVar()
+        _range_row("Period range (days):", self._period_min_var, self._period_max_var)
+
+        self._mag_min_var = tk.StringVar()
+        self._mag_max_var = tk.StringVar()
+        _range_row("Max Mag range:", self._mag_min_var, self._mag_max_var)
+
+        self._ref_year_from_var = tk.StringVar()
+        self._ref_year_to_var   = tk.StringVar(value=str(datetime.date.today().year))
+        _range_row("Ref year range:", self._ref_year_from_var, self._ref_year_to_var)
+        self._ref_year_from_var.trace_add('write', self._on_ref_year_filter_change)
+        self._ref_year_to_var.trace_add('write', self._on_ref_year_filter_change)
+
+        # Clear button
+        def _clear_simbad_filters():
+            self._otype_var.set('All')
+            for v in (self._period_min_var, self._period_max_var,
+                      self._mag_min_var, self._mag_max_var,
+                      self._ref_year_from_var):
+                v.set('')
+            self._ref_year_to_var.set(str(datetime.date.today().year))
+        tk.Button(body, text="Clear SIMBAD Filters", bg=PANEL, fg='#888',
+                  relief='flat', bd=0, font=(UI_FONT, 9), cursor='hand2',
+                  activebackground=PANEL,
+                  command=_clear_simbad_filters).pack(anchor='w', pady=(6, 2))
+
+    def _build_vsx_filters(self, parent):
+        """Build the collapsible VSX filter sub-section in the left panel."""
+        # ── toggle header ─────────────────────────────────────────
+        container = tk.Frame(parent, bg=PANEL)
+        container.pack(fill='x', padx=(24, 4), pady=(0, 4))
+
+        open_state = [False]
+        arrow = tk.Label(container, text='▶  VSX Filters',
+                         bg=PANEL, fg=ACC, font=(UI_FONT, 9, 'bold'),
+                         cursor='hand2', anchor='w')
+        arrow.pack(fill='x')
+
+        body = tk.Frame(container, bg=PANEL)
+        # not packed initially (collapsed by default)
+
+        def _toggle(e=None):
+            open_state[0] = not open_state[0]
+            if open_state[0]:
+                body.pack(fill='x')
+                arrow.config(text='▼  VSX Filters')
+            else:
+                body.pack_forget()
+                arrow.config(text='▶  VSX Filters')
+        arrow.bind('<Button-1>', _toggle)
+
+        # ── helpers ───────────────────────────────────────────────
+        def _range_row(label_text, var_from, var_to):
+            tk.Label(body, text=label_text, bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(fill='x', pady=(3, 0))
+            rf = tk.Frame(body, bg=PANEL)
+            rf.pack(fill='x', pady=1)
+            ttk.Entry(rf, textvariable=var_from, width=7).pack(side='left')
+            tk.Label(rf, text=' – ', bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(side='left')
+            ttk.Entry(rf, textvariable=var_to, width=7).pack(side='left')
+
+        def _single_row(label_text, var, width=9):
+            rf = tk.Frame(body, bg=PANEL)
+            rf.pack(fill='x', pady=(3, 1))
+            tk.Label(rf, text=label_text, bg=PANEL, fg=FG,
+                     font=(UI_FONT, 10)).pack(side='left')
+            ttk.Entry(rf, textvariable=var, width=width).pack(side='left', padx=(4, 0))
+
+        # ── filter vars & widgets ─────────────────────────────────
+        tk.Label(body, text="Var Type:", bg=PANEL, fg=FG,
+                 font=(UI_FONT, 10)).pack(fill='x', pady=(2, 0))
+        vsx_vartypes = [
+            'All',
+            # ── RR Lyrae ─────────────────────────────────────────
+            'RR', 'RRAB', 'RRC', 'RRD',
+            # ── Cepheids ─────────────────────────────────────────
+            'CEP', 'DCEP', 'DCEPS', 'CW', 'CWA', 'CWB', 'BLBOO',
+            # ── Other pulsating ──────────────────────────────────
+            'DSCT', 'DSCTC', 'HADS', 'SXPHE',
+            'GDOR', 'BCEP', 'BCEPS', 'ACYG', 'PVTEL',
+            'RV', 'RVA', 'RVB',
+            'SR', 'SRA', 'SRB', 'SRC', 'SRD', 'LPV',
+            'M', 'L', 'LB', 'LC',
+            'ZZ', 'ZZA', 'ZZB', 'ZZO',
+            # ── Eclipsing / binary ───────────────────────────────
+            'E', 'EA', 'EB', 'EW', 'EP', 'EP+BY', 'EP+RS',
+            'GS', 'RS', 'RSCVN', 'ELL',
+            # ── Rotating ─────────────────────────────────────────
+            'ACV', 'ACVO', 'BY', 'FKCOM', 'SXARI', 'PSR',
+            # ── Eruptive ─────────────────────────────────────────
+            'UV', 'UVN', 'GCAS', 'SDOR', 'WR', 'BE', 'FU',
+            'INT', 'IN', 'INA', 'INB',
+            'IS', 'ISA', 'ISB', 'IA', 'IB', 'I',
+            # ── Cataclysmic ──────────────────────────────────────
+            'CV', 'UG', 'UGSS', 'UGSU', 'UGZ',
+            'AM', 'DQ', 'AMCVN', 'NL', 'NI',
+            'N', 'NA', 'NB', 'NC', 'NR',
+            'SN', 'SNA', 'SNB',
+            'ZAND',
+            # ── X-ray ────────────────────────────────────────────
+            'X', 'XB', 'XF', 'XI', 'XJ', 'XM',
+            'XND', 'XNG', 'XP', 'XPR',
+            # ── Miscellaneous ────────────────────────────────────
+            'PN', 'R',
+        ]
+        self._vsx_vartype_var = tk.StringVar(value='All')
+        ttk.Combobox(body, textvariable=self._vsx_vartype_var,
+                     values=vsx_vartypes).pack(fill='x', pady=2)
+
+        self._vsx_period_min_var = tk.StringVar()
+        self._vsx_period_max_var = tk.StringVar()
+        _range_row("Period range (days):", self._vsx_period_min_var, self._vsx_period_max_var)
+
+        self._vsx_mag_min_var = tk.StringVar()
+        self._vsx_mag_max_var = tk.StringVar()
+        _range_row("Max Mag range:", self._vsx_mag_min_var, self._vsx_mag_max_var)
+
+        self._vsx_amp_min_var = tk.StringVar()
+        _single_row("Amplitude ≥ (mag):", self._vsx_amp_min_var, width=7)
+
+        # Clear button
+        def _clear_vsx_filters():
+            self._vsx_vartype_var.set('All')
+            for v in (self._vsx_period_min_var, self._vsx_period_max_var,
+                      self._vsx_mag_min_var,    self._vsx_mag_max_var,
+                      self._vsx_amp_min_var):
+                v.set('')
+        tk.Button(body, text="Clear VSX Filters", bg=PANEL, fg='#888',
+                  relief='flat', bd=0, font=(UI_FONT, 9), cursor='hand2',
+                  activebackground=PANEL,
+                  command=_clear_vsx_filters).pack(anchor='w', pady=(6, 2))
 
     def _build_right_panel(self, parent):
         parent.columnconfigure(0, weight=1)
@@ -3060,6 +3497,65 @@ class StarQueryApp(tk.Tk):
             'otype':      self._otype_var.get(),
         }
 
+    def _get_vsx_filters(self):
+        """Parse VSX filter fields from the left-panel UI."""
+        def _f(var):
+            v = var.get().strip()
+            return _try_float(v)
+        return {
+            'vartype':    self._vsx_vartype_var.get().strip(),
+            'period_min': _f(self._vsx_period_min_var),
+            'period_max': _f(self._vsx_period_max_var),
+            'mag_min':    _f(self._vsx_mag_min_var),
+            'mag_max':    _f(self._vsx_mag_max_var),
+            'amp_min':    _f(self._vsx_amp_min_var),
+        }
+
+    def _get_wds_filters(self):
+        """Parse WDS filter fields from the left-panel UI.
+        Returns a dict; any field that is blank or unparseable is None (= no filter)."""
+        def _f(var):
+            v = var.get().strip()
+            return _try_float(v)
+        def _i(var):
+            v = var.get().strip()
+            try:
+                return int(v) if v else None
+            except ValueError:
+                return None
+        def _ra(var):
+            """RA entered in decimal hours (e.g. 14.0); convert to degrees."""
+            v = var.get().strip()
+            try:
+                return float(v) * 15.0 if v else None
+            except ValueError:
+                return None
+        def _dec(var):
+            """Dec entered in decimal degrees (e.g. -30.5)."""
+            v = var.get().strip()
+            try:
+                return float(v) if v else None
+            except ValueError:
+                return None
+
+        return {
+            'ra_from':   _ra(self._wds_ra_from_var),
+            'ra_to':     _ra(self._wds_ra_to_var),
+            'dec_from':  _dec(self._wds_dec_from_var),
+            'dec_to':    _dec(self._wds_dec_to_var),
+            'sep_min':   _f(self._wds_sep_min_var),
+            'sep_max':   _f(self._wds_sep_max_var),
+            'mag1_min':  _f(self._wds_mag1_min_var),
+            'mag1_max':  _f(self._wds_mag1_max_var),
+            'mag2_min':  _f(self._wds_mag2_min_var),
+            'mag2_max':  _f(self._wds_mag2_max_var),
+            'pa_min':    _f(self._wds_pa_min_var),
+            'pa_max':    _f(self._wds_pa_max_var),
+            'nobs_min':  _i(self._wds_nobs_min_var),
+            'year_from': _i(self._wds_year_from_var),
+            'year_to':   _i(self._wds_year_to_var),
+        }
+
     def _run_query(self):
         if self._batch_index >= 0:
             if not messagebox.askyesno("Clear Batch",
@@ -3091,13 +3587,37 @@ class StarQueryApp(tk.Tk):
             dec_str    = self._dec_str = self._dec_var.get().strip()
             radius_str = self._radius_var.get().strip()
             if not ra_str or not dec_str:
-                messagebox.showwarning("Input Required", "Please enter RA and Dec.")
-                return
-            ra_deg = parse_ra(ra_str)
-            dec_deg = parse_dec(dec_str)
-            if ra_deg is None or dec_deg is None:
-                messagebox.showerror("Parse Error", "Could not parse RA or Dec. Please check format.")
-                return
+                # Allow proceeding without a center point when a catalog can supply
+                # its own search constraint without needing RA/Dec.
+                # WDS: RA/Dec range filters act as a sky-area scan.
+                # SIMBAD: period/mag/otype filters alone are sufficient for a filter-only scan.
+                # All other catalogs are gracefully skipped in this mode.
+                wds_flt_pre = self._get_wds_filters()
+                wds_has_range = any(wds_flt_pre.get(k) is not None
+                                    for k in ('ra_from', 'ra_to', 'dec_from', 'dec_to'))
+                wds_ok = self._src_vars.get('wds', tk.BooleanVar()).get() and wds_has_range
+
+                simbad_flt_pre = self._get_filters()
+                simbad_has_filter = (
+                    simbad_flt_pre.get('period_min') is not None or
+                    simbad_flt_pre.get('period_max') is not None or
+                    simbad_flt_pre.get('mag_min')    is not None or
+                    simbad_flt_pre.get('mag_max')    is not None or
+                    simbad_flt_pre.get('otype', 'All') not in ('', 'All')
+                )
+                simbad_ok = (self._src_vars.get('simbad', tk.BooleanVar(value=True)).get()
+                             and simbad_has_filter)
+
+                if not (wds_ok or simbad_ok):
+                    messagebox.showwarning("Input Required", "Please enter RA and Dec.")
+                    return
+                ra_deg = dec_deg = None
+            else:
+                ra_deg = parse_ra(ra_str)
+                dec_deg = parse_dec(dec_str)
+                if ra_deg is None or dec_deg is None:
+                    messagebox.showerror("Parse Error", "Could not parse RA or Dec. Please check format.")
+                    return
             try:
                 radius = float(radius_str)
             except ValueError:
@@ -3127,43 +3647,43 @@ class StarQueryApp(tk.Tk):
         # Count threads about to be fired (for batch completion tracking)
         pending = 0
         for key, label, cols in self.TABS:
-            if not self._src_vars[key].get():
-                continue
-            pending += len(self.VIZIER_SUBTABS) if key == 'vizier' else 1
+            if key == 'vizier':
+                pending += sum(1 for vk, _, _ in self.VIZIER_SUBTABS
+                               if self._src_vars.get(vk, tk.BooleanVar(value=True)).get())
+            elif self._src_vars[key].get():
+                pending += 1
         self._query_pending = pending
 
         for key, label, cols in self.TABS:
-            if not self._src_vars[key].get():
-                if key == 'vizier':
-                    for vk, vlabel, _ in self.VIZIER_SUBTABS:
+            if key == 'vizier':
+                for vk, vlabel, _ in self.VIZIER_SUBTABS:
+                    if not self._src_vars.get(vk, tk.BooleanVar(value=True)).get():
                         self._clear_tab(vk)
                         self._banner_not_searched(vk)
                         self._update_tab_text(vk, vlabel, None)
-                else:
+                    else:
+                        self._clear_tab(vk, silent=True)
+                        self._banner_working(vk)
+                        self._update_tab_text(vk, vlabel, None)
+                        threading.Thread(
+                            target=self._query_worker,
+                            args=(vk, vlabel, mode, name, ra_deg, dec_deg, radius, flt, gaia_extra),
+                            daemon=True,
+                        ).start()
+            else:
+                if not self._src_vars[key].get():
                     self._clear_tab(key)
                     self._banner_not_searched(key)
                     self._update_tab_text(key, label, None)
-                continue
-
-            if key == 'vizier':
-                for vk, vlabel, _ in self.VIZIER_SUBTABS:
-                    self._clear_tab(vk, silent=True)
-                    self._banner_working(vk)
-                    self._update_tab_text(vk, vlabel, None)
+                else:
+                    self._clear_tab(key, silent=True)
+                    self._banner_working(key)
+                    self._update_tab_text(key, label, None)
                     threading.Thread(
                         target=self._query_worker,
-                        args=(vk, vlabel, mode, name, ra_deg, dec_deg, radius, flt, gaia_extra),
+                        args=(key, label, mode, name, ra_deg, dec_deg, radius, flt, gaia_extra),
                         daemon=True,
                     ).start()
-            else:
-                self._clear_tab(key, silent=True)
-                self._banner_working(key)
-                self._update_tab_text(key, label, None)
-                threading.Thread(
-                    target=self._query_worker,
-                    args=(key, label, mode, name, ra_deg, dec_deg, radius, flt, gaia_extra),
-                    daemon=True,
-                ).start()
 
     def _query_worker(self, key, label, mode, name, ra_deg, dec_deg, radius, flt, gaia_extra=None):
         pm  = flt['period_min']
@@ -3172,10 +3692,41 @@ class StarQueryApp(tk.Tk):
         mM  = flt['mag_max']
         ot  = flt['otype']
 
+        # Coords mode was allowed through with ra_deg=None when a catalog can supply
+        # its own search constraint (WDS RA/Dec range filters; SIMBAD period/mag/otype filters).
+        # Skip all other catalogs gracefully so they show "not searched" rather than crashing.
+        if mode == 'coords' and ra_deg is None:
+            simbad_has_filter = (pm is not None or pM is not None or
+                                 mm is not None or mM is not None or
+                                 (ot and ot != 'All'))
+            if key == 'simbad' and simbad_has_filter:
+                pass   # runs with filter-only ADQL (no spatial constraint)
+            elif key == 'wds':
+                # Only run WDS if it has its own RA/Dec range filters.
+                # Without them, _wds_adql_with_filters() produces no WHERE clause
+                # and returns all 157k+ WDS objects.
+                wds_flt_chk = self._get_wds_filters()
+                wds_has_range = any(wds_flt_chk.get(k) is not None
+                                    for k in ('ra_from', 'ra_to', 'dec_from', 'dec_to'))
+                if not wds_has_range:
+                    self.after(0, self._banner_not_searched, key)
+                    self.after(0, self._update_tab_text, key, label, None)
+                    self.after(0, self._on_query_complete)
+                    return
+            else:
+                self.after(0, self._banner_not_searched, key)
+                self.after(0, self._update_tab_text, key, label, None)
+                self.after(0, self._on_query_complete)
+                return
+
         if mode == 'name':
             _log.info(f'QUERY {key} | name={name!r} | radius={radius} arcmin')
-        else:
+        elif ra_deg is not None:
             _log.info(f'QUERY {key} | coords=({ra_deg:.5f}, {dec_deg:.5f}) | radius={radius} arcmin')
+        elif key == 'simbad':
+            _log.info(f'QUERY {key} | filter-only scan (period/mag/otype, no coords)')
+        else:
+            _log.info(f'QUERY {key} | WDS sky-area scan (RA/Dec range filters)')
 
         def status_cb(msg):
             self.after(0, self._set_status, msg)
@@ -3184,14 +3735,27 @@ class StarQueryApp(tk.Tk):
             if key == 'simbad':
                 if mode == 'name':
                     results = query_simbad_by_name(name, pm, pM, mm, mM, status_cb, otype_filter=ot)
+                elif ra_deg is None:
+                    results = query_simbad_no_coords(ot, pm, pM, mm, mM, status_cb)
                 else:
                     results = query_simbad(ra_deg, dec_deg, radius, ot, pm, pM, mm, mM, status_cb)
 
             elif key == 'vsx':
+                vsx_flt = self._get_vsx_filters()
                 if mode == 'name':
-                    results = query_vsx_by_name(name, pm, pM, mm, mM, status_cb)
+                    results = query_vsx_by_name(
+                        name,
+                        vsx_flt['period_min'], vsx_flt['period_max'],
+                        vsx_flt['mag_min'],    vsx_flt['mag_max'],
+                        vsx_flt['amp_min'],    vsx_flt['vartype'],
+                        status_cb)
                 else:
-                    results = query_vsx(ra_deg, dec_deg, radius, pm, pM, mm, mM, status_cb)
+                    results = query_vsx(
+                        ra_deg, dec_deg, radius,
+                        vsx_flt['period_min'], vsx_flt['period_max'],
+                        vsx_flt['mag_min'],    vsx_flt['mag_max'],
+                        vsx_flt['amp_min'],    vsx_flt['vartype'],
+                        status_cb)
 
             elif key == 'tmass':
                 if mode == 'name':
@@ -3218,10 +3782,19 @@ class StarQueryApp(tk.Tk):
                     results = query_tycho2(ra_deg, dec_deg, radius, status_cb)
 
             elif key == 'wds':
-                if mode == 'name':
-                    results = query_wds_by_name(name, radius, status_cb)
+                wds_flt = self._get_wds_filters()
+                has_sky_area = (wds_flt.get('ra_from')  is not None or
+                                wds_flt.get('ra_to')    is not None or
+                                wds_flt.get('dec_from') is not None or
+                                wds_flt.get('dec_to')   is not None)
+                if has_sky_area:
+                    # RA/Dec range filter defines the spatial constraint directly —
+                    # no center point or cone radius needed.
+                    results = query_wds(None, None, None, status_cb, wds_flt=wds_flt)
+                elif mode == 'name':
+                    results = query_wds_by_name(name, radius, status_cb, wds_flt=wds_flt)
                 else:
-                    results = query_wds(ra_deg, dec_deg, radius, status_cb)
+                    results = query_wds(ra_deg, dec_deg, radius, status_cb, wds_flt=wds_flt)
 
             elif key == 'orb6':
                 if mode == 'name':
@@ -4654,8 +5227,13 @@ WHERE b.main_id = '{safe_id}'
                        bg=BG, fg=FG, selectcolor=ENT, activebackground=BG,
                        font=(UI_FONT, 11)).pack(side='left')
 
+        # Stable container — sits between mode radios and auto-run row so that
+        # switching modes never pushes the buttons below the field widgets.
+        content_frame = tk.Frame(win, bg=BG)
+        content_frame.pack(padx=14, fill='x', pady=4)
+
         # Name mode widgets
-        name_frame = tk.Frame(win, bg=BG)
+        name_frame = tk.Frame(content_frame, bg=BG)
         tk.Label(name_frame, text="Star Name column:", bg=BG, fg=FG,
                  font=(UI_FONT, 10)).pack(anchor='w')
         name_col_var = tk.StringVar(value=headers[0] if headers else '')
@@ -4667,7 +5245,7 @@ WHERE b.main_id = '{safe_id}'
         ttk.Entry(name_frame, textvariable=name_radius_var, width=10).pack(anchor='w', pady=2)
 
         # Coords mode widgets
-        coords_frame = tk.Frame(win, bg=BG)
+        coords_frame = tk.Frame(content_frame, bg=BG)
         tk.Label(coords_frame, text="RA column:", bg=BG, fg=FG,
                  font=(UI_FONT, 10)).pack(anchor='w')
         ra_col_var = tk.StringVar(value=headers[0] if headers else '')
@@ -4693,12 +5271,12 @@ WHERE b.main_id = '{safe_id}'
         def _toggle(*_):
             if mode_var.get() == 'name':
                 coords_frame.pack_forget()
-                name_frame.pack(padx=14, fill='x', pady=4)
+                name_frame.pack(fill='x')
             else:
                 name_frame.pack_forget()
-                coords_frame.pack(padx=14, fill='x', pady=4)
+                coords_frame.pack(fill='x')
         mode_var.trace_add('write', _toggle)
-        name_frame.pack(padx=14, fill='x', pady=4)  # start in name mode
+        name_frame.pack(fill='x')  # start in name mode
 
         auto_var = tk.BooleanVar(value=False)
         auto_chk_f = tk.Frame(win, bg=BG)
@@ -4769,12 +5347,16 @@ WHERE b.main_id = '{safe_id}'
         self._batch_dec_col   = dec_col
         self._batch_label_col = label_col
         self._batch_radius    = radius
-        self._auto_run          = auto_run
-        self._auto_run_after_id = None
+        self._auto_run            = auto_run
+        self._auto_run_after_id   = None
+        self._auto_run_start_time = datetime.datetime.now() if auto_run else None
         self._batch_nav_frame.pack(fill='x', padx=0, pady=(0, 4))
         if auto_run:
             self._batch_cancel_auto_btn.pack(padx=10, pady=(0, 2),
                                              before=self._batch_close_btn)
+            self._batch_timer_label.pack(fill='x', padx=10, pady=(0, 2),
+                                         before=self._batch_cancel_auto_btn)
+            self._tick_batch_timer()
         self._update_batch_nav()
         self._batch_query_current()
 
@@ -4909,6 +5491,34 @@ WHERE b.main_id = '{safe_id}'
         self._batch_export_btn.config(
             state='normal' if self._batch_results else 'disabled')
 
+    def _elapsed_str(self):
+        """Return elapsed time since auto-run started as 'Xh Ym Zs' string."""
+        if self._auto_run_start_time is None:
+            return ''
+        delta = datetime.datetime.now() - self._auto_run_start_time
+        total = int(delta.total_seconds())
+        h, rem = divmod(total, 3600)
+        m, s   = divmod(rem, 60)
+        if h:
+            return f"{h}h {m:02d}m {s:02d}s"
+        if m:
+            return f"{m}m {s:02d}s"
+        return f"{s}s"
+
+    def _tick_batch_timer(self):
+        """Update the timer label every second while auto-run is active."""
+        if not self._auto_run or self._auto_run_start_time is None:
+            return
+        start_str = self._auto_run_start_time.strftime('%H:%M:%S')
+        self._batch_timer_label.config(
+            text=f"Started: {start_str}   Elapsed: {self._elapsed_str()}")
+        self.after(1000, self._tick_batch_timer)
+
+    def _stop_batch_timer(self):
+        """Hide the timer label and clear the start time."""
+        self._batch_timer_label.pack_forget()
+        self._auto_run_start_time = None
+
     def _auto_run_next(self):
         self._auto_run_after_id = None
         if not self._auto_run or self._batch_index < 0:
@@ -4917,13 +5527,15 @@ WHERE b.main_id = '{safe_id}'
         next_idx = self._batch_index + 1
         n = len(self._batch_rows)
         if next_idx >= n:
+            elapsed = self._elapsed_str()
             self._auto_run = False
             self._batch_cancel_auto_btn.pack_forget()
+            self._stop_batch_timer()
             self._update_batch_nav()
-            self._set_status(f"Auto-run complete — {n} target(s) queried")
+            self._set_status(f"Auto-run complete — {n} target(s) queried in {elapsed}")
             if self._batch_results:
                 if messagebox.askyesno("Auto-Run Complete",
-                        f"All {n} target(s) queried.\n\nExport results now?",
+                        f"All {n} target(s) queried in {elapsed}.\n\nExport results now?",
                         parent=self):
                     self._export_batch()
             return
@@ -4955,13 +5567,16 @@ WHERE b.main_id = '{safe_id}'
             1000, self._auto_run_cooldown, secs_remaining - 1)
 
     def _cancel_auto_run(self):
+        elapsed = self._elapsed_str()
         self._auto_run = False
         if self._auto_run_after_id:
             self.after_cancel(self._auto_run_after_id)
             self._auto_run_after_id = None
         self._batch_cancel_auto_btn.pack_forget()
+        self._stop_batch_timer()
         self._update_batch_nav()
-        self._set_status("Auto-run cancelled")
+        msg = f"Auto-run cancelled — elapsed {elapsed}" if elapsed else "Auto-run cancelled"
+        self._set_status(msg)
 
     def _close_batch(self, confirm=True):
         if self._auto_run:
@@ -5389,6 +6004,69 @@ WHERE b.main_id = '{safe_id}'
                 txt.insert("end", f"  •  {b}\n\n", "bullet")
             txt.insert("end", "\n")
 
+        entry("v1.3.2", "2026-06-04", [
+            "Bug fix: batch queries containing WDS designations now return results from "
+            "all catalogs, not only the WDS tab. When a WDS name is queried by name and "
+            "SIMBAD does not return a position, the app now performs a small VizieR "
+            "lookup to retrieve the precise catalog RA/Dec for that WDS entry. Those "
+            "coordinates are then used for the cone searches on SIMBAD, VSX, 2MASS, "
+            "AllWISE, APASS, Tycho-2, Gaia, and NEA, so all catalogs return results "
+            "normally.",
+            "VizieR sub-catalogs (2MASS, AllWISE, APASS, Tycho-2, WDS, Orb6) now have "
+            "individual checkboxes in the Data Sources panel, replacing the single "
+            "VizieR on/off toggle. Each sub-catalog can be enabled or disabled "
+            "independently.",
+            "WDS query filters: a collapsible 'WDS Filters' section has been added "
+            "under the WDS checkbox. Filters include RA range (decimal hours), Dec "
+            "range (decimal degrees), separation (most recent, arcsec), primary and "
+            "secondary magnitude, position angle (most recent, degrees), minimum "
+            "number of observations, and last-observation year range. All fields are "
+            "optional; blank fields are ignored. When RA/Dec range filters are set, "
+            "the WDS query runs as a sky-area scan with no center point required — "
+            "the other catalogs are gracefully skipped in this mode.",
+            "SIMBAD query filters moved into a collapsible 'SIMBAD Filters' panel "
+            "under the SIMBAD checkbox (same style as WDS Filters). Includes Object "
+            "Type, Period range, Max Mag range, and Ref year range. When any SIMBAD "
+            "filter is set and RA/Dec is left blank, SIMBAD runs a catalog-wide "
+            "filter-only scan with no spatial constraint; other catalogs are skipped.",
+            "Bug fix: when a SIMBAD filter-only scan was active with no RA/Dec, WDS "
+            "was incorrectly running an unconstrained query and returning all 157,000+ "
+            "catalog entries. WDS now correctly shows 'Not searched' unless its own "
+            "RA/Dec range filters are set.",
+            "AAVSO VSX query filters: a collapsible 'VSX Filters' panel added under "
+            "the AAVSO VSX checkbox. Includes Var Type (dropdown with 74 standard VSX "
+            "types plus free-text entry), Period range (days), Max Mag range, and "
+            "Amplitude ≥ (mag, computed as MinMag − MaxMag). Var Type is sent "
+            "server-side to the VSX API; period, mag, and amplitude are applied "
+            "client-side. VSX requires coordinates (RA/Dec) — filter-only scanning "
+            "without a position is not supported by the VSX API. SIMBAD and VSX "
+            "filters are independent of each other.",
+            "Batch auto-run timer: when auto-run is active, the batch panel now shows "
+            "the start time and a live elapsed time counter (updated every second). "
+            "Elapsed time is also shown in the completion and cancellation messages. "
+            "Format is Xh Ym Zs, with hours and minutes omitted when zero.",
+            "Application icon: SOQyT.ico is now shown in the title bar, taskbar, and "
+            "embedded in the Windows executable.",
+            "Bug fix: in the Configure Batch Import dialog, switching to 'By "
+            "Coordinates' mode no longer pushes the Auto-Run checkbox and Load "
+            "Batch / Cancel buttons below the coordinate field dropdowns. The "
+            "buttons now remain at the bottom of the dialog in both modes.",
+            "User Guide: Table of Contents links now scroll the selected section to "
+            "the top of the view.",
+            "Help → Check for Updates: when already running the latest version, a "
+            "confirmation dialog is now shown. Previously the result was only "
+            "reflected silently in the status bar.",
+        ])
+
+        entry("v1.3.1", "2026-05-24", [
+            "Bug fix: NASA Exoplanet Archive queries are now case-insensitive. "
+            "NEA's Oracle database uses case-sensitive string comparison by default, "
+            "so a search for 'Wasp-36' would not match the stored 'WASP-36', returning "
+            "0 results. All NEA name comparisons now use UPPER() on both the input and "
+            "the database column, so any capitalisation (wasp-36, Wasp-36, WASP-36) "
+            "will return results correctly.",
+        ])
+
         entry("v1.3.0", "2026-05-23", [
             "Comprehensive error logging: every HTTP request (URL, ADQL query preview, "
             "HTTP status, response size, elapsed time) and every exception with full "
@@ -5711,6 +6389,25 @@ WHERE b.main_id = '{safe_id}'
             ("6.  Batch Import",     "sec_batch"),
         ]
 
+        # _section_lines maps mark name → line number, recorded just before each
+        # heading is inserted.  _jump_to() uses this at click time to scroll the
+        # heading to the exact top of the visible area using dlineinfo().
+        _section_lines = {}
+
+        def _jump_to(line_no):
+            """Scroll so line_no is at the very top of the visible area.
+
+            Strategy: scroll to the end of the document first so the target
+            line is guaranteed to be *above* the viewport, then call see().
+            When the target is above the viewport, Tkinter's see() scrolls up
+            just enough to place the line at the TOP of the view — exactly
+            what we want.  Because there is no update_idletasks() between the
+            two calls the user never sees the intermediate bottom position.
+            """
+            idx = f"{line_no}.0"
+            txt.yview_moveto(1.0)   # target is now above the viewport
+            txt.see(idx)            # above → see() brings it to the TOP
+
         txt.insert("end", "TABLE OF CONTENTS\n", "h2")
         txt.insert("end", "\n")
         for label, mark in sections:
@@ -5718,14 +6415,16 @@ WHERE b.main_id = '{safe_id}'
             txt.insert("end", f"  {label}\n", tag)
             txt.tag_configure(tag, foreground=ACC, font=("Segoe UI", 14),
                               underline=True, lmargin1=16, lmargin2=16)
-            txt.tag_bind(tag, "<Button-1>", lambda e, m=mark: txt.see(m))
+            txt.tag_bind(tag, "<Button-1>",
+                         lambda e, m=mark: _jump_to(_section_lines[m]))
             txt.tag_bind(tag, "<Enter>",    lambda e: txt.config(cursor="hand2"))
             txt.tag_bind(tag, "<Leave>",    lambda e: txt.config(cursor="arrow"))
         txt.insert("end", "\n")
 
         def _h2(title, mark):
-            txt.mark_set(mark, "end")
-            txt.mark_gravity(mark, "left")
+            # Record the exact line number before inserting the heading so _jump_to()
+            # can scroll it precisely to the top of the view at click time.
+            _section_lines[mark] = int(txt.index("end").split('.')[0])
             txt.insert("end", title + "\n", "h2")
 
         # Section 1 — Search Modes
@@ -5746,16 +6445,19 @@ WHERE b.main_id = '{safe_id}'
         txt.insert("end", " — CDS Strasbourg; broad object types, spectral types,"
                    " parallax, proper motion, and cross-identifiers.\n", "i1")
         txt.insert("end", "• ", "i1"); txt.insert("end", "AAVSO VSX", ("i1", "bold"))
-        txt.insert("end", " — Variable Star Index; period, variability type, magnitude.\n", "i1")
+        txt.insert("end", " — Variable Star Index; period, variability type, magnitude."
+                   " Supports query filters — see Section 3.\n", "i1")
         txt.insert("end", "• ", "i1"); txt.insert("end", "VizieR", ("i1", "bold"))
-        txt.insert("end", " — Six catalogues across separate sub-tabs:\n", "i1")
+        txt.insert("end", " — Six catalogues, each with its own checkbox so they can be"
+                   " enabled or disabled independently:\n", "i1")
         for _cname, _cdesc in [
             ("2MASS",     "J, H, K near-infrared magnitudes."),
             ("AllWISE",   "W1–W4 mid-infrared magnitudes."),
             ("APASS DR9", "V and B optical magnitudes."),
             ("Tycho-2",   "BT, VT magnitudes and proper motions."),
             ("WDS",       "Washington Double Star Catalog (position angle, separation,"
-                          " component magnitudes, discoverer)."),
+                          " component magnitudes, discoverer). Supports query filters —"
+                          " see Section 3."),
             ("Orb6",      "Sixth Orbit Catalog; computed visual binary orbits (period,"
                           " semi-major axis, inclination, eccentricity)."
                           " Clicking a row shows a link to the orbital plot."),
@@ -5782,14 +6484,80 @@ WHERE b.main_id = '{safe_id}'
 
         # Section 3 — Filters
         _h2("3.  FILTERS", "sec_filters")
-        txt.insert("end", "• ", "i1"); txt.insert("end", "Object Type", ("i1", "bold"))
-        txt.insert("end", " (SIMBAD only) — restrict results to a SIMBAD object type"
-                   " code (e.g. \"RR*\" for RR Lyrae, \"V*\" for variable stars).\n", "i1")
-        txt.insert("end", "• ", "i1"); txt.insert("end", "Period range", ("i1", "bold"))
-        txt.insert("end", " — filter AAVSO VSX results by period in days.\n", "i1")
-        txt.insert("end", "• ", "i1"); txt.insert("end", "Max Mag range", ("i1", "bold"))
-        txt.insert("end", " — filter AAVSO VSX results by maximum magnitude.\n", "i1")
-        txt.insert("end", "All filters are optional and applied per-database where relevant.\n")
+        txt.insert("end", "Each catalog with a collapsible filter panel has a small arrow"
+                   " (▶) below its checkbox. Click the arrow to expand or collapse the"
+                   " filters. All filter fields are optional; blank or default fields are"
+                   " ignored. Filters from different catalogs are fully independent.\n")
+        txt.insert("end", "\n")
+        txt.tag_configure("note", background="#3a2a00", foreground="#ffcc44",
+                          font=("Segoe UI", 13, "bold"),
+                          lmargin1=10, lmargin2=10, spacing1=6, spacing3=6)
+        txt.insert("end",
+                   "  ⚠  IMPORTANT — Filter-only searches (no RA/Dec entered) require"
+                   " \"By Coordinates\" mode. Switch to By Coordinates, leave RA and Dec"
+                   " blank, set your filter values, and click Run Query. The app will run"
+                   " only the catalogs whose filters are set (SIMBAD or WDS); all others"
+                   " will show \"Not searched\".\n", "note")
+        txt.insert("end", "\n")
+
+        txt.insert("end", "• ", "i1"); txt.insert("end", "SIMBAD Filters", ("i1", "bold"))
+        txt.insert("end", " — collapsible panel under the SIMBAD checkbox."
+                   " Available filters:\n", "i1")
+        for _sf, _sd in [
+            ("Object Type",      "Restrict to a SIMBAD object type code (e.g. RR* for "
+                                 "RR Lyrae, V* for all variable stars). Select from the "
+                                 "dropdown or type any SIMBAD otype code."),
+            ("Period range",     "Period in days — min and/or max."),
+            ("Max Mag range",    "Maximum (brightest) magnitude — min and/or max."),
+            ("Ref year range",   "Year range for the variability reference epoch."),
+        ]:
+            txt.insert("end", "  • ", "i2"); txt.insert("end", _sf, ("i2", "bold"))
+            txt.insert("end", f" — {_sd}\n", "i2")
+        txt.insert("end", "  When any SIMBAD filter is set and RA/Dec is left blank, SIMBAD"
+                   " runs a catalog-wide filter-only scan with no spatial constraint (results"
+                   " capped at 500). Other catalogs are skipped in this mode.\n", "i1")
+        txt.insert("end", "\n")
+
+        txt.insert("end", "• ", "i1"); txt.insert("end", "VSX Filters", ("i1", "bold"))
+        txt.insert("end", " — collapsible panel under the AAVSO VSX checkbox."
+                   " Available filters:\n", "i1")
+        for _vf, _vd in [
+            ("Var Type",         "Variable star type — select from 74 standard VSX type "
+                                 "codes (e.g. RRAB, DCEP, EA, EP, EP+BY) or type any "
+                                 "custom value. Sent server-side to the VSX API so only "
+                                 "matching objects are returned."),
+            ("Period range",     "Period in days — min and/or max. Applied client-side."),
+            ("Max Mag range",    "Maximum (brightest) magnitude — min and/or max. Applied client-side."),
+            ("Amplitude ≥",      "Minimum variability amplitude in magnitudes, computed as "
+                                 "MinMag − MaxMag. Objects with no min/max mag data are not "
+                                 "excluded. Applied client-side."),
+        ]:
+            txt.insert("end", "  • ", "i2"); txt.insert("end", _vf, ("i2", "bold"))
+            txt.insert("end", f" — {_vd}\n", "i2")
+        txt.insert("end", "  When any VSX filter is set and RA/Dec is left blank, VSX runs a"
+                   " catalog-wide filter-only scan. Other catalogs are skipped in this mode.\n", "i1")
+        txt.insert("end", "\n")
+
+        txt.insert("end", "• ", "i1"); txt.insert("end", "WDS Filters", ("i1", "bold"))
+        txt.insert("end", " — collapsible panel under the WDS checkbox."
+                   " Available filters:\n", "i1")
+        for _wf, _wd in [
+            ("RA (h)",           "Right Ascension range in decimal hours (e.g. 14 to 20)."),
+            ("Dec (°)",          "Declination range in decimal degrees (e.g. 0 to 90)."),
+            ('Sep (")',          "Most-recent separation range in arcseconds."),
+            ("Mag primary",      "Primary component magnitude range."),
+            ("Mag secondary",    "Secondary component magnitude range."),
+            ("PA (°)",           "Most-recent position angle range in degrees."),
+            ("N obs ≥",          "Minimum number of observations on record."),
+            ("Last obs year",    "Range of years for the most recent observation."),
+        ]:
+            txt.insert("end", "  • ", "i2"); txt.insert("end", _wf, ("i2", "bold"))
+            txt.insert("end", f" — {_wd}\n", "i2")
+        txt.insert("end", "  When RA or Dec range filters are set, WDS runs as a sky-area"
+                   " scan (no center point required). Enter RA/Dec in the main coordinate"
+                   " fields for a standard cone search, or leave them blank to scan the"
+                   " specified sky region. Other catalogs are skipped in sky-area scan"
+                   " mode.\n", "i1")
         txt.insert("end", "\n")
 
         # Section 4 — Results & Detail
